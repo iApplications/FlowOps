@@ -606,19 +606,21 @@ flowops/
     ├── ARCHITECTURE.md
     ├── ROADMAP.md
     ├── PROJECT_RULES.md
-    └── SECURITY.md
+    ├── SECURITY.md
+    └── DEVELOPMENT.md
 ```
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Project Rules](docs/PROJECT_RULES.md)
 - [Security](docs/SECURITY.md)
+- [Local development](docs/DEVELOPMENT.md)
 
 ---
 
 ## Status
 
-**Current stage:** Planning / Architecture
+**Current stage:** Phase 0 foundation in progress
 
 No production deployment is required during the early development phases.
 
