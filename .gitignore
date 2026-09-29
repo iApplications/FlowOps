@@ -1,0 +1,13 @@
+node_modules/
+.next/
+.turbo/
+*.tsbuildinfo
+bin/
+obj/
+.vs/
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.user
+*.suo
