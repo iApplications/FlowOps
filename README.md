@@ -620,7 +620,7 @@ flowops/
 
 ## Status
 
-**Current stage:** Phase 0 foundation in progress
+**Current stage:** Phase 1 authentication and organizations in development
 
 No production deployment is required during the early development phases.
 

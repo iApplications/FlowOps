@@ -1,4 +1,8 @@
 import type { ReactNode } from "react";
+export { AuthForm } from "./auth-form";
+export { ConfirmEmail } from "./confirm-email";
+export { WorkspaceAccount } from "./workspace-account";
+export { BrandMark, DashboardShell } from "./shell";
 
 type SurfaceShellProps = {
   title: string;
@@ -8,14 +12,13 @@ type SurfaceShellProps = {
 
 export function SurfaceShell({ title, description, children }: SurfaceShellProps) {
   return (
-    <main className="min-h-screen bg-slate-950 px-6 py-16 text-slate-100">
-      <div className="mx-auto max-w-4xl">
-        <p className="mb-4 text-sm font-semibold uppercase tracking-[0.2em] text-sky-300">
-          FlowOps
-        </p>
-        <h1 className="text-4xl font-semibold tracking-tight">{title}</h1>
-        <p className="mt-4 max-w-2xl text-lg text-slate-300">{description}</p>
-        {children && <div className="mt-10">{children}</div>}
+    <main className="simple-shell">
+      <a className="brand" href="/"><span className="brand-symbol" aria-hidden="true"><i /><i /><i /></span>FlowOps</a>
+      <div className="simple-content">
+        <p className="eyebrow">Workspace</p>
+        <h1>{title}</h1>
+        <p>{description}</p>
+        {children && <div style={{ marginTop: 28 }}>{children}</div>}
       </div>
     </main>
   );
