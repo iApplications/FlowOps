@@ -16,6 +16,13 @@ public static class FormEndpoints
                 .OrderBy(x => x.Name).ToListAsync());
         });
         group.MapPost("/", Create);
+        group.MapGet("/{formId:guid}", async (Guid formId, HttpContext context, FlowOpsDbContext db) =>
+        {
+            var organizationId = AuthEndpoints.CurrentSession(context)!.ActiveOrganizationId;
+            var form = await db.Forms.AsNoTracking().SingleOrDefaultAsync(x => x.Id == formId && x.OrganizationId == organizationId);
+            return form is null ? Results.NotFound(new { error = "Form not found in the active organization." }) : Results.Ok(form);
+        });
+        group.MapPut("/{formId:guid}/fields", SaveFields);
         group.MapPut("/{formId:guid}", Update);
     }
 
@@ -24,6 +31,22 @@ public static class FormEndpoints
         if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Trim().Length > 120)
             return "Enter a form name between 1 and 120 characters.";
         return (request.Description?.Length ?? 0) > 2000 ? "Description must be 2,000 characters or fewer." : null;
+    }
+
+    private static async Task<IResult> SaveFields(Guid formId, FormFieldsRequest request, HttpContext context, FlowOpsDbContext db)
+    {
+        var session = AuthEndpoints.CurrentSession(context)!;
+        var form = await db.Forms.SingleOrDefaultAsync(x => x.Id == formId && x.OrganizationId == session.ActiveOrganizationId);
+        if (form is null) return Results.NotFound(new { error = "Form not found in the active organization." });
+        if (request.DraftRevision != form.DraftRevision) return Results.Conflict(new { error = "This draft changed in another session. Reload it before saving." });
+        if (FormFieldValidation.Validate(request.Fields) is string error) return Results.BadRequest(new { error });
+        form.FieldsJson = System.Text.Json.JsonSerializer.Serialize(request.Fields);
+        form.DraftRevision++;
+        form.UpdatedAt = DateTimeOffset.UtcNow;
+        AuditService.Append(db, "form.fields_updated", session.UserId, form.Id.ToString(), form.OrganizationId);
+        try { await db.SaveChangesAsync(); }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { error = "This draft changed in another session. Reload it before saving." }); }
+        return Results.Ok(form);
     }
 
     private static async Task<IResult> Create(FormDetails request, HttpContext context, FlowOpsDbContext db)
@@ -54,3 +77,4 @@ public static class FormEndpoints
 }
 
 public sealed record FormDetails(string Name, string? Description);
+public sealed record FormFieldsRequest(List<FormField>? Fields, int DraftRevision);

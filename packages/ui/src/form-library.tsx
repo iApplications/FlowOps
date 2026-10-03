@@ -41,7 +41,7 @@ export function FormLibrary({ organizationName }: { organizationName: string }) 
   }
   return <section className="panel-card" id="forms" style={{ marginBottom: 24 }}>
     <div className="panel-header"><div><span className="panel-kicker">{organizationName}</span><h2>Forms</h2>
-      <p>Create and organize draft forms. Field design and publishing are the next steps.</p></div><span className="tag">{forms.length} drafts</span></div>
+      <p>Create draft forms, configure their fields, and preview before publishing.</p></div><span className="tag">{forms.length} drafts</span></div>
     {message && <p className="notice" role={failed ? "alert" : "status"}>{message}</p>}
     {loading ? <p className="empty-state">Loading forms…</p> : forms.length === 0 ? <p className="empty-state">Create your first form for this organization.</p> :
       <div className="org-list">{forms.map(form => <button key={form.id} type="button" disabled={busy} className={`org-option ${selectedId === form.id ? "org-option-active" : ""}`} onClick={() => select(form)}>
@@ -52,8 +52,13 @@ export function FormLibrary({ organizationName }: { organizationName: string }) 
       <h3>{selectedId ? "Edit draft details" : "New form"}</h3>
       <label className="field">Form name<input required maxLength={120} value={name} disabled={busy} onChange={event => setName(event.target.value)} placeholder="Expense claim" /></label>
       <label className="field">Description<textarea maxLength={2000} value={description} disabled={busy} onChange={event => setDescription(event.target.value)} placeholder="Describe what this form is for" /></label>
-      <button className="btn btn-primary" disabled={busy}>{busy ? "Saving…" : selectedId ? "Save changes" : "Create draft"}</button>
-      {selectedId && <button type="button" className="btn" disabled={busy} onClick={() => select(null)}>Cancel editing</button>}
+      <div className="designer-actions">
+        <button className="btn btn-primary" disabled={busy}>{busy ? "Saving…" : selectedId ? "Save changes" : "Create draft"}</button>
+        {selectedId && <>
+          <a className="btn" href={`/forms/${selectedId}`} aria-disabled={busy || undefined} onClick={event => { if (busy) event.preventDefault(); }}>Design fields</a>
+          <button type="button" className="btn" disabled={busy} onClick={() => select(null)}>Cancel editing</button>
+        </>}
+      </div>
     </form>
   </section>;
 }
