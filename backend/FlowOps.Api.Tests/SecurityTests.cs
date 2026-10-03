@@ -437,6 +437,42 @@ public sealed class SecurityTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Draft_forms_require_studio_mfa_and_stay_in_the_active_organization()
+    {
+        using var studio = NewClient();
+        using var portal = NewClient();
+        await RegisterAndLogin(studio, "form-owner@example.test");
+        await RegisterAndLogin(portal, "form-member@example.test", "Portal");
+        var firstOrganization = await CreateOrganization(studio, "First Forms Workspace");
+        Assert.Equal(HttpStatusCode.Forbidden, (await studio.GetAsync("/api/forms")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(studio, HttpMethod.Post, "/api/forms",
+            new { name = "Protected draft" })).StatusCode);
+        var setup = await studio.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Post, "/api/auth/mfa/enable",
+            new { code = AuthenticatorCode(setup.GetProperty("sharedKey").GetString()!) })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Post, "/api/forms", new { name = " " })).StatusCode);
+        var created = await Mutate(studio, HttpMethod.Post, "/api/forms", new { name = "Expense claim", description = "Draft description" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var formId = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Updated expense claim", description = "Updated" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await Mutate(studio, HttpMethod.Post,
+            $"/api/organizations/{firstOrganization}/members", new { email = "form-member@example.test", role = "Member" })).StatusCode);
+        await Mutate(portal, HttpMethod.Post, $"/api/organizations/{firstOrganization}/activate");
+        Assert.Equal(HttpStatusCode.Forbidden, (await portal.GetAsync("/api/forms")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(portal, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Unauthorized edit" })).StatusCode);
+        await CreateOrganization(studio, "Second Forms Workspace");
+        Assert.Empty((await studio.GetFromJsonAsync<JsonElement>("/api/forms")).EnumerateArray());
+        Assert.Equal(HttpStatusCode.NotFound, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Cross organization edit" })).StatusCode);
+        await Mutate(studio, HttpMethod.Post, $"/api/organizations/{firstOrganization}/activate");
+        var rows = await studio.GetFromJsonAsync<JsonElement>("/api/forms");
+        Assert.Equal("Updated expense claim", Assert.Single(rows.EnumerateArray()).GetProperty("name").GetString());
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        Assert.True(await db.AuditEvents.AnyAsync(x => x.Action == "form.created" && x.OrganizationId == firstOrganization));
+        Assert.True(await db.AuditEvents.AnyAsync(x => x.Action == "form.updated" && x.SubjectId == formId.ToString()));
+    }
+
+    [Fact]
     public async Task Https_sessions_use_secure_http_only_cookies_for_each_surface()
     {
         foreach (var surface in new[] { "Studio", "Portal" })

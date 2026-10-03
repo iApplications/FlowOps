@@ -69,6 +69,7 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
     public DbSet<OrganizationMember> OrganizationMembers => Set<OrganizationMember>();
     public DbSet<BrowserSession> BrowserSessions => Set<BrowserSession>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
+    public DbSet<FlowOps.Api.Forms.FormDefinition> Forms => Set<FlowOps.Api.Forms.FormDefinition>();
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
@@ -91,6 +92,13 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
+        builder.Entity<FlowOps.Api.Forms.FormDefinition>(entity =>
+        {
+            entity.Property(x => x.Name).HasMaxLength(120);
+            entity.Property(x => x.Description).HasMaxLength(2000);
+            entity.HasIndex(x => new { x.OrganizationId, x.Name });
+            entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Restrict);
+        });
         builder.Entity<FlowUser>().Property(x => x.DisplayName).HasMaxLength(120);
         builder.Entity<FlowUser>().Property(x => x.AccountSurface).HasMaxLength(16);
         builder.Entity<FlowUser>().HasIndex(x => new { x.AccountSurface, x.NormalizedEmail }).IsUnique();
