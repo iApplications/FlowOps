@@ -70,6 +70,7 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
     public DbSet<BrowserSession> BrowserSessions => Set<BrowserSession>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
     public DbSet<FlowOps.Api.Forms.FormDefinition> Forms => Set<FlowOps.Api.Forms.FormDefinition>();
+    public DbSet<FlowOps.Api.Forms.FormPublication> FormPublications => Set<FlowOps.Api.Forms.FormPublication>();
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
@@ -83,8 +84,22 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
         return base.SaveChanges();
     }
 
+    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        EnsureAuditAppendOnly();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        EnsureAuditAppendOnly();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
     private void EnsureAuditAppendOnly()
     {
+        if (ChangeTracker.Entries<FlowOps.Api.Forms.FormPublication>().Any(x => x.State is EntityState.Modified or EntityState.Deleted))
+            throw new InvalidOperationException("Published forms are immutable.");
         if (ChangeTracker.Entries<AuditEvent>().Any(x => x.State is EntityState.Modified or EntityState.Deleted))
             throw new InvalidOperationException("Audit events are append-only.");
     }
@@ -92,6 +107,15 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
+        builder.Entity<FlowOps.Api.Forms.FormPublication>(entity =>
+        {
+            entity.Property(x => x.Name).HasMaxLength(120);
+            entity.Property(x => x.Description).HasMaxLength(2000);
+            entity.HasIndex(x => new { x.FormId, x.VersionNumber }).IsUnique();
+            entity.HasIndex(x => x.OrganizationId);
+            entity.HasOne<FlowOps.Api.Forms.FormDefinition>().WithMany().HasForeignKey(x => x.FormId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Restrict);
+        });
         builder.Entity<FlowOps.Api.Forms.FormDefinition>(entity =>
         {
             entity.Property(x => x.Name).HasMaxLength(120);

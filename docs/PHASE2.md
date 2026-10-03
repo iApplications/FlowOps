@@ -16,7 +16,7 @@ First work branch: `feat/phase2-form-foundation`.
 
 ## Current implementation
 
-Draft library and field designer/preview are implemented. Current work branch: `feat/phase2-field-designer`. Publishing, Portal rendering, submissions/history and file storage are still pending. Preview validates inputs locally and does not upload files or submit data.
+Draft library, field designer/preview, immutable publishing and Portal viewing are implemented. Current work branch: `feat/phase2-form-publishing`. Submissions/history and file storage are still pending. Preview validates inputs locally and does not upload files or submit data. Portal renders the latest published version read-only until submissions are implemented.
 
 ## Internal test: draft library
 
@@ -43,3 +43,17 @@ Apply the `DraftFormFields` migration and restart the API. Existing drafts start
 9. Change the active organization and attempt to reopen another organization's designer: access must be denied. Portal accounts cannot read or save drafts.
 
 Automated checks cover all field types, IDs/order/removal persistence, invalid rules, stale saves, MFA, Portal restrictions and organization boundaries. Internal browser testing is still required before commit.
+
+## Internal test: publishing and Portal viewing
+
+Apply the `FormPublishing` migration and restart the API. Existing forms remain unpublished.
+
+1. In Studio, open a saved form with at least one field. Publish version 1 and confirm the action. Empty forms and forms with unsaved field changes cannot be published.
+2. Sign in with a separate Portal account assigned to that organization. Open Forms from the header: only published forms appear. Open the form and check its name, description, field order, settings and version number. Inputs are read-only; submissions/uploads come next.
+3. Edit and save the Studio draft's name or fields. Refresh Portal: version 1 must remain unchanged.
+4. Reload the designer after editing metadata, then publish version 2. Portal now shows version 2, with one entry for the form. Earlier versions remain stored unchanged.
+5. Open a draft in two Studio tabs. Publish or save in one, then try publishing from the stale tab. It must show an error and require reloading.
+6. Switch organizations in Portal through Overview. Forms must follow the active organization; a direct URL to another organization's form must be unavailable. Unpublished draft URLs must also be unavailable.
+7. Portal cannot edit or publish drafts. Studio publishing requires Owner/Admin access and the organization's MFA policy.
+
+Automated backend checks verify snapshots survive draft edits, republishing preserves previous versions, stale revisions are rejected, published data cannot be modified through the context, and surface/organization boundaries hold. Run internal browser checks before committing this branch to `dev/Phase2_Form`.

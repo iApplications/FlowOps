@@ -455,6 +455,8 @@ public sealed class SecurityTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
         var formId = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
         var fieldId = Guid.NewGuid();
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Post,
+            $"/api/forms/{formId}/publish", new { draftRevision = 0 })).StatusCode);
         var fields = new List<FlowOps.Api.Forms.FormField>
         {
             new(fieldId, "Text", "Employee name", true, MaxLength: 80),
@@ -491,7 +493,36 @@ public sealed class SecurityTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(portal, HttpMethod.Put,
             $"/api/forms/{formId}/fields", new { fields, draftRevision = 1 })).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(portal, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Unauthorized edit" })).StatusCode);
+        Assert.Empty((await portal.GetFromJsonAsync<JsonElement>("/api/portal/forms")).EnumerateArray());
+        Assert.Equal(HttpStatusCode.NotFound, (await portal.GetAsync($"/api/portal/forms/{formId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(portal, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 3 })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await studio.GetAsync("/api/portal/forms")).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 2 })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 3 })).StatusCode);
+        var published = await portal.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}");
+        var publicationId = published.GetProperty("id").GetGuid();
+        Assert.Equal(1, published.GetProperty("versionNumber").GetInt32());
+        Assert.Equal(7, published.GetProperty("fields").GetArrayLength());
+        Assert.Single((await portal.GetFromJsonAsync<JsonElement>("/api/portal/forms")).EnumerateArray());
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields", new { fields = new[] { fields[0] }, draftRevision = 4 })).StatusCode);
+        Assert.Equal(7, (await portal.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}")).GetProperty("fields").GetArrayLength());
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Version two draft", draftRevision = 5 })).StatusCode);
+        Assert.Equal("Updated expense claim", (await portal.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}")).GetProperty("name").GetString());
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 5 })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 6 })).StatusCode);
+        var latest = await portal.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}");
+        Assert.Equal(2, latest.GetProperty("versionNumber").GetInt32());
+        Assert.NotEqual(publicationId, latest.GetProperty("id").GetGuid());
+        Assert.Single(latest.GetProperty("fields").EnumerateArray());
+        Assert.Equal("Version two draft", latest.GetProperty("name").GetString());
+        Assert.Single((await portal.GetFromJsonAsync<JsonElement>("/api/portal/forms")).EnumerateArray());
         await CreateOrganization(studio, "Second Forms Workspace");
+        var otherOrganization = (await studio.GetFromJsonAsync<JsonElement>("/api/auth/me")).GetProperty("activeOrganization").GetProperty("organizationId").GetGuid();
+        await Mutate(studio, HttpMethod.Post, $"/api/organizations/{otherOrganization}/members", new { email = "form-member@example.test", role = "Member" });
+        await Mutate(portal, HttpMethod.Post, $"/api/organizations/{otherOrganization}/activate");
+        Assert.Empty((await portal.GetFromJsonAsync<JsonElement>("/api/portal/forms")).EnumerateArray());
+        Assert.Equal(HttpStatusCode.NotFound, (await portal.GetAsync($"/api/portal/forms/{formId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 7 })).StatusCode);
         Assert.Empty((await studio.GetFromJsonAsync<JsonElement>("/api/forms")).EnumerateArray());
         Assert.Equal(HttpStatusCode.NotFound, (await studio.GetAsync($"/api/forms/{formId}")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await Mutate(studio, HttpMethod.Put,
@@ -499,11 +530,25 @@ public sealed class SecurityTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Cross organization edit" })).StatusCode);
         await Mutate(studio, HttpMethod.Post, $"/api/organizations/{firstOrganization}/activate");
         var rows = await studio.GetFromJsonAsync<JsonElement>("/api/forms");
-        Assert.Equal("Updated expense claim", Assert.Single(rows.EnumerateArray()).GetProperty("name").GetString());
+        Assert.Equal("Version two draft", Assert.Single(rows.EnumerateArray()).GetProperty("name").GetString());
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields",
+            new { fields = Array.Empty<FlowOps.Api.Forms.FormField>(), draftRevision = 7 })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish",
+            new { draftRevision = 8 })).StatusCode);
+        await Mutate(portal, HttpMethod.Post, $"/api/organizations/{firstOrganization}/activate");
+        var afterEmptyDraft = await portal.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}");
+        Assert.Equal(2, afterEmptyDraft.GetProperty("versionNumber").GetInt32());
+        Assert.Single(afterEmptyDraft.GetProperty("fields").EnumerateArray());
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
         Assert.True(await db.AuditEvents.AnyAsync(x => x.Action == "form.created" && x.OrganizationId == firstOrganization));
         Assert.True(await db.AuditEvents.AnyAsync(x => x.Action == "form.updated" && x.SubjectId == formId.ToString()));
+        Assert.Equal(2, await db.FormPublications.CountAsync(x => x.FormId == formId));
+        var original = await db.FormPublications.SingleAsync(x => x.Id == publicationId);
+        Assert.Equal(7, original.Fields.Count);
+        Assert.True(await db.AuditEvents.AnyAsync(x => x.Action == "form.published" && x.SubjectId == publicationId.ToString()));
+        original.Name = "Tampered";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
     }
 
     [Fact]

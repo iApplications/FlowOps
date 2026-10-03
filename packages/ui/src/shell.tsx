@@ -56,7 +56,7 @@ export function DashboardShell({ surface, user, children, section = "overview" }
             <a href="/#security"><span className="studio-nav-dot" />Security</a>
           </nav>
         </div>
-        <div className="studio-sidebar-foot">FlowOps Studio<br />Draft forms are available. Field design comes next.</div>
+        <div className="studio-sidebar-foot">FlowOps Studio<br />Design and publish forms for your organization.</div>
       </aside>
       <div className="studio-main" id="overview">
         <header className="studio-topbar">
@@ -84,14 +84,15 @@ export function DashboardShell({ surface, user, children, section = "overview" }
   return <div className="portal-layout">
     <header className="portal-header">
       <BrandMark label="FlowOps Portal" />
+      <nav className="designer-actions" aria-label="Portal sections"><a className="btn" href="/" aria-current={section === "overview" ? "page" : undefined}>Overview</a><a className="btn" href="/forms" aria-current={section === "forms" ? "page" : undefined}>Forms</a></nav>
       <span className="portal-header-note">Your space for requests and approvals</span>
     </header>
     <main className="portal-content">
-      <div className="portal-heading"><div><p className="eyebrow">Your workspace</p><h1>Good to see you, {name}.</h1><p>Keep your account and organization ready for what comes next.</p></div></div>
+      <div className="portal-heading"><div><p className="eyebrow">Your workspace</p><h1>{section === "forms" ? "Forms" : `Good to see you, ${name}.`}</h1><p>{section === "forms" ? "View published forms from your active organization." : "Manage your account, security and assigned organizations."}</p></div></div>
       <section className="portal-hero">
         <div><p className="eyebrow">{active ? "You are in" : "Your next step"}</p>
           <h2>{active ? active.name : "Join your organization"}</h2>
-          <p>{active ? `You have ${active.role.toLowerCase()} access here. Forms, requests, and tasks will appear as those modules are added.` : "Ask your organization administrator to add your confirmed email address through Studio."}</p>
+          <p>{active ? `You have ${active.role.toLowerCase()} access here. Open Forms to view what your organization has published.` : "Ask your organization administrator to add your confirmed email address through Studio."}</p>
         </div>
         <div className="portal-hero-art" aria-hidden="true"><span /></div>
       </section>

@@ -245,6 +245,9 @@ namespace FlowOps.Api.Data.Migrations
                     b.Property<Guid>("OrganizationId")
                         .HasColumnType("uuid");
 
+                    b.Property<int>("PublicationCount")
+                        .HasColumnType("integer");
+
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -253,6 +256,48 @@ namespace FlowOps.Api.Data.Migrations
                     b.HasIndex("OrganizationId", "Name");
 
                     b.ToTable("Forms");
+                });
+
+            modelBuilder.Entity("FlowOps.Api.Forms.FormPublication", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<string>("FieldsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("FormId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("PublishedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("VersionNumber")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrganizationId");
+
+                    b.HasIndex("FormId", "VersionNumber")
+                        .IsUnique();
+
+                    b.ToTable("FormPublications");
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRole", b =>
@@ -417,6 +462,21 @@ namespace FlowOps.Api.Data.Migrations
 
             modelBuilder.Entity("FlowOps.Api.Forms.FormDefinition", b =>
                 {
+                    b.HasOne("FlowOps.Api.Data.Organization", null)
+                        .WithMany()
+                        .HasForeignKey("OrganizationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("FlowOps.Api.Forms.FormPublication", b =>
+                {
+                    b.HasOne("FlowOps.Api.Forms.FormDefinition", null)
+                        .WithMany()
+                        .HasForeignKey("FormId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("FlowOps.Api.Data.Organization", null)
                         .WithMany()
                         .HasForeignKey("OrganizationId")

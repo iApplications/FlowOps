@@ -23,7 +23,7 @@ export default async function DesignerPage({ params }: { params: Promise<{ formI
   if (!response.ok) return <SurfaceShell title="Form unavailable" description={response.status === 404 ? "This form is not in your active organization." : response.status === 405 ? "The running API does not include the field designer yet. Stop debugging in Visual Studio, rebuild the API, then start it again." : `The API could not load this form (HTTP ${response.status}).`}><Link className="btn" href="/forms">Back to Forms</Link></SurfaceShell>;
   const form = await response.json() as FormDraft;
   return <DashboardShell surface="Studio" user={user} section="forms">
-    <p><Link className="text-button" href="/forms">← Back to Forms</Link></p>
+    <div className="designer-actions form-navigation"><Link className="btn" href="/forms">Back to Forms</Link></div>
     <FormDesigner key={form.id} initialForm={form} />
   </DashboardShell>;
 }

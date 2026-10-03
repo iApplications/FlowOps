@@ -3,7 +3,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { apiRequest } from "@flowops/api-client";
 
-type DraftForm = { id: string; name: string; description: string };
+type DraftForm = { id: string; name: string; description: string; draftRevision: number; publicationCount: number };
 
 export function FormLibrary({ organizationName }: { organizationName: string }) {
   const [forms, setForms] = useState<DraftForm[]>([]);
@@ -32,7 +32,7 @@ export function FormLibrary({ organizationName }: { organizationName: string }) 
     setBusy(true); setMessage(""); setFailed(false);
     try {
       await apiRequest(selectedId ? `/api/forms/${selectedId}` : "/api/forms", {
-        method: selectedId ? "PUT" : "POST", body: JSON.stringify({ name, description }),
+        method: selectedId ? "PUT" : "POST", body: JSON.stringify({ name, description, draftRevision: forms.find(form => form.id === selectedId)?.draftRevision }),
       });
       setForms(await apiRequest<DraftForm[]>("/api/forms"));
       setSelectedId(null); setName(""); setDescription(""); setMessage("Draft saved.");
@@ -45,7 +45,7 @@ export function FormLibrary({ organizationName }: { organizationName: string }) 
     {message && <p className="notice" role={failed ? "alert" : "status"}>{message}</p>}
     {loading ? <p className="empty-state">Loading forms…</p> : forms.length === 0 ? <p className="empty-state">Create your first form for this organization.</p> :
       <div className="org-list">{forms.map(form => <button key={form.id} type="button" disabled={busy} className={`org-option ${selectedId === form.id ? "org-option-active" : ""}`} onClick={() => select(form)}>
-        <span><strong>{form.name}</strong><small style={{ display: "block" }}>{form.description || "No description"}</small></span><span className="tag">Draft</span>
+        <span><strong>{form.name}</strong><small style={{ display: "block" }}>{form.description || "No description"}</small></span><span className="tag">{form.publicationCount ? `Published v${form.publicationCount}` : "Draft"}</span>
       </button>)}</div>}
     <div className="section-divider" />
     <form onSubmit={save} className="stack-form">
