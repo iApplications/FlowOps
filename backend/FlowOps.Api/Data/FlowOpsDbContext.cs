@@ -96,6 +96,7 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
         {
             entity.Property(x => x.Name).HasMaxLength(120);
             entity.Property(x => x.Description).HasMaxLength(2000);
+            entity.Property(x => x.DraftRevision).IsConcurrencyToken();
             entity.HasIndex(x => new { x.OrganizationId, x.Name });
             entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Restrict);
         });

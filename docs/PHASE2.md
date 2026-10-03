@@ -14,9 +14,9 @@ First work branch: `feat/phase2-form-foundation`.
 4. Submissions: validate all values on the server against the exact published schema; store its identity with submission data. Portal users view their own submission history; Studio managers view organization submissions.
 5. Files and acceptance: authenticated local storage with size/type limits, safe generated filenames, organization ownership checks and authorized downloads. Verify every initial field, validation, publication, history and tenant boundary.
 
-## Current first slice
+## Current implementation
 
-Draft library is implemented; the field designer, publishing, Portal rendering, submissions/history and file storage are still pending. Form metadata can be edited; there is no publish or submit action in this slice.
+Draft library and field designer/preview are implemented. Current work branch: `feat/phase2-field-designer`. Publishing, Portal rendering, submissions/history and file storage are still pending. Preview validates inputs locally and does not upload files or submit data.
 
 ## Internal test: draft library
 
@@ -27,3 +27,19 @@ Draft library is implemented; the field designer, publishing, Portal rendering, 
 - Empty/long names and long descriptions are rejected; create/update append audit metadata.
 
 Apply the `FormDraftFoundation` EF migration before testing against PostgreSQL. Restart the API to load the new endpoints.
+
+## Internal test: field designer and preview
+
+Apply the `DraftFormFields` migration and restart the API. Existing drafts start with no fields.
+
+1. Open Forms, select a draft and click Design fields.
+2. Add all eight field types. Configure labels, help text and required flags.
+3. Configure text length, number/currency min/max, date bounds, dropdown options and allowed file types/size.
+4. Move fields up/down and remove one. Save, refresh and verify the order, settings and remaining fields persist.
+5. Preview: use Check validation with missing required values, out-of-range numbers/dates and valid values. Files exceeding the size/type limits are rejected locally; no upload occurs.
+6. Save invalid rules (minimum greater than maximum, duplicate/blank dropdown options or disallowed file types) and verify visible errors.
+7. Open the same draft in two tabs. Save changes in one, then save from the other: the stale save must be rejected without overwriting the first tab's changes. Reload the stale tab to continue.
+8. Leave with unsaved changes: verify the warning and that choosing to stay preserves edits.
+9. Change the active organization and attempt to reopen another organization's designer: access must be denied. Portal accounts cannot read or save drafts.
+
+Automated checks cover all field types, IDs/order/removal persistence, invalid rules, stale saves, MFA, Portal restrictions and organization boundaries. Internal browser testing is still required before commit.

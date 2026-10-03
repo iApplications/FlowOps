@@ -454,14 +454,48 @@ public sealed class SecurityTests : IAsyncLifetime
         var created = await Mutate(studio, HttpMethod.Post, "/api/forms", new { name = "Expense claim", description = "Draft description" });
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
         var formId = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var fieldId = Guid.NewGuid();
+        var fields = new List<FlowOps.Api.Forms.FormField>
+        {
+            new(fieldId, "Text", "Employee name", true, MaxLength: 80),
+            new(Guid.NewGuid(), "Textarea", "Reason", MaxLength: 500),
+            new(Guid.NewGuid(), "Number", "Quantity", Min: 1, Max: 100),
+            new(Guid.NewGuid(), "Currency", "Amount", true, Min: 0, Max: 10000),
+            new(Guid.NewGuid(), "Date", "Expense date", MinDate: "2026-01-01", MaxDate: "2026-12-31"),
+            new(Guid.NewGuid(), "Dropdown", "Category", Options: ["Travel", "Meals"]),
+            new(Guid.NewGuid(), "Checkbox", "I confirm", true),
+            new(Guid.NewGuid(), "File", "Receipt", MaxFileSizeMb: 5, AcceptedExtensions: [".pdf", ".png"])
+        };
+        var fieldSave = await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields", new { fields, draftRevision = 0 });
+        Assert.Equal(HttpStatusCode.OK, fieldSave.StatusCode);
+        var loaded = await studio.GetFromJsonAsync<JsonElement>($"/api/forms/{formId}");
+        Assert.Equal(8, loaded.GetProperty("fields").GetArrayLength());
+        Assert.Equal(fieldId, loaded.GetProperty("fields")[0].GetProperty("id").GetGuid());
+        Assert.Equal(1, loaded.GetProperty("draftRevision").GetInt32());
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(studio, HttpMethod.Put,
+            $"/api/forms/{formId}/fields", new { fields, draftRevision = 0 })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Put,
+            $"/api/forms/{formId}/fields", new { fields = new[] { fields[0], fields[0] }, draftRevision = 1 })).StatusCode);
+        fields.Reverse();
+        fields.RemoveAt(0);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put,
+            $"/api/forms/{formId}/fields", new { fields, draftRevision = 1 })).StatusCode);
+        var reordered = await studio.GetFromJsonAsync<JsonElement>($"/api/forms/{formId}");
+        Assert.Equal(7, reordered.GetProperty("fields").GetArrayLength());
+        Assert.Equal(fields[0].Id, reordered.GetProperty("fields")[0].GetProperty("id").GetGuid());
         Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Updated expense claim", description = "Updated" })).StatusCode);
         Assert.Equal(HttpStatusCode.Created, (await Mutate(studio, HttpMethod.Post,
             $"/api/organizations/{firstOrganization}/members", new { email = "form-member@example.test", role = "Member" })).StatusCode);
         await Mutate(portal, HttpMethod.Post, $"/api/organizations/{firstOrganization}/activate");
         Assert.Equal(HttpStatusCode.Forbidden, (await portal.GetAsync("/api/forms")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(portal, HttpMethod.Put,
+            $"/api/forms/{formId}/fields", new { fields, draftRevision = 1 })).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(portal, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Unauthorized edit" })).StatusCode);
         await CreateOrganization(studio, "Second Forms Workspace");
         Assert.Empty((await studio.GetFromJsonAsync<JsonElement>("/api/forms")).EnumerateArray());
+        Assert.Equal(HttpStatusCode.NotFound, (await studio.GetAsync($"/api/forms/{formId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Mutate(studio, HttpMethod.Put,
+            $"/api/forms/{formId}/fields", new { fields, draftRevision = 1 })).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Cross organization edit" })).StatusCode);
         await Mutate(studio, HttpMethod.Post, $"/api/organizations/{firstOrganization}/activate");
         var rows = await studio.GetFromJsonAsync<JsonElement>("/api/forms");
@@ -470,6 +504,24 @@ public sealed class SecurityTests : IAsyncLifetime
         var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
         Assert.True(await db.AuditEvents.AnyAsync(x => x.Action == "form.created" && x.OrganizationId == firstOrganization));
         Assert.True(await db.AuditEvents.AnyAsync(x => x.Action == "form.updated" && x.SubjectId == formId.ToString()));
+    }
+
+    [Fact]
+    public void Field_schema_rejects_invalid_limits_options_and_file_types()
+    {
+        var valid = new FlowOps.Api.Forms.FormField(Guid.NewGuid(), "Text", "Name", MaxLength: 80);
+        string? Validate(FlowOps.Api.Forms.FormField field) => FlowOps.Api.Forms.FormFieldValidation.Validate([field]);
+        Assert.Null(Validate(valid));
+        Assert.NotNull(Validate(valid with { Type = "Script" }));
+        Assert.NotNull(Validate(valid with { Label = " " }));
+        Assert.NotNull(Validate(valid with { MaxLength = 10001 }));
+        Assert.NotNull(Validate(valid with { Type = "Number", MaxLength = null, Min = 10, Max = 1 }));
+        Assert.NotNull(Validate(valid with { Type = "Currency", MaxLength = null, Min = 1.001m }));
+        Assert.NotNull(Validate(valid with { Type = "Date", MaxLength = null, MinDate = "2026-02-30" }));
+        Assert.NotNull(Validate(valid with { Type = "Date", MaxLength = null, MinDate = "2026-12-01", MaxDate = "2026-01-01" }));
+        Assert.NotNull(Validate(valid with { Type = "Dropdown", MaxLength = null, Options = ["Travel", " travel "] }));
+        Assert.NotNull(Validate(valid with { Type = "File", MaxLength = null, MaxFileSizeMb = 11, AcceptedExtensions = [".pdf"] }));
+        Assert.NotNull(Validate(valid with { Type = "File", MaxLength = null, MaxFileSizeMb = 5, AcceptedExtensions = [".exe"] }));
     }
 
     [Fact]
