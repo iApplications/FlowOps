@@ -627,12 +627,13 @@ flowops/
 - [Project Rules](docs/PROJECT_RULES.md)
 - [Security](docs/SECURITY.md)
 - [Local development](docs/DEVELOPMENT.md)
+- [Phase 2 delivery and testing](docs/PHASE2.md)
 
 ---
 
 ## Status
 
-**Current stage:** Phase 1 authentication and organizations implemented; internal testing in progress.
+**Current stage:** Phase 1 merged into main; Phase 2 Form Builder in development on `dev/Phase2_Form`.
 
 Implemented features include separate Studio/Portal accounts and sessions, email confirmation and password reset, authenticator MFA and recovery codes, organization creation and switching, membership management, and server-side organization permissions. Studio and Portal provide the initial account and workspace interfaces; workflow builders, forms, requests, and execution belong to later phases.
 
