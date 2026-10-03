@@ -9,6 +9,11 @@
   "peerDependencies": {
     "react": "^19.0.0"
   },
+  "dependencies": {
+    "@flowops/api-client": "*",
+    "@flowops/types": "*",
+    "qrcode.react": "^4.2.0"
+  },
   "devDependencies": {
     "@types/react": "^19"
   }

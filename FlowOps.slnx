@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/backend/">
     <Project Path="backend/FlowOps.Api/FlowOps.Api.csproj" />
+    <Project Path="backend/FlowOps.Api.Tests/FlowOps.Api.Tests.csproj" />
   </Folder>
 </Solution>
