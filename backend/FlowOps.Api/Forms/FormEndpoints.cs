@@ -24,6 +24,43 @@ public static class FormEndpoints
         });
         group.MapPut("/{formId:guid}/fields", SaveFields);
         group.MapPut("/{formId:guid}", Update);
+        group.MapPost("/{formId:guid}/publish", Publish);
+        var portal = app.MapGroup("/api/portal/forms").WithTags("Published forms").RequireAuthorization(Permissions.PortalAccess);
+        portal.MapGet("/", async (HttpContext context, FlowOpsDbContext db) =>
+        {
+            var organizationId = AuthEndpoints.CurrentSession(context)!.ActiveOrganizationId;
+            return Results.Ok(await db.FormPublications.AsNoTracking()
+                .Where(x => x.OrganizationId == organizationId && !db.FormPublications.Any(newer => newer.FormId == x.FormId && newer.VersionNumber > x.VersionNumber))
+                .OrderBy(x => x.Name).Select(x => new { x.FormId, x.Id, x.VersionNumber, x.Name, x.Description, x.PublishedAt }).ToListAsync());
+        });
+        portal.MapGet("/{formId:guid}", async (Guid formId, HttpContext context, FlowOpsDbContext db) =>
+        {
+            var organizationId = AuthEndpoints.CurrentSession(context)!.ActiveOrganizationId;
+            var publication = await db.FormPublications.AsNoTracking().Where(x => x.FormId == formId && x.OrganizationId == organizationId)
+                .OrderByDescending(x => x.VersionNumber).FirstOrDefaultAsync();
+            return publication is null ? Results.NotFound(new { error = "Published form not found in the active organization." }) : Results.Ok(publication);
+        });
+    }
+
+    private static async Task<IResult> Publish(Guid formId, PublishFormRequest request, HttpContext context, FlowOpsDbContext db)
+    {
+        var session = AuthEndpoints.CurrentSession(context)!;
+        var form = await db.Forms.SingleOrDefaultAsync(x => x.Id == formId && x.OrganizationId == session.ActiveOrganizationId);
+        if (form is null) return Results.NotFound(new { error = "Form not found in the active organization." });
+        if (form.DraftRevision != request.DraftRevision) return Results.Conflict(new { error = "This draft changed. Reload it before publishing." });
+        if (form.Fields.Count == 0) return Results.BadRequest(new { error = "Add and save at least one field before publishing." });
+        if (FormFieldValidation.Validate(form.Fields) is string error) return Results.BadRequest(new { error });
+        var publication = new FormPublication { FormId = form.Id, OrganizationId = form.OrganizationId,
+            VersionNumber = ++form.PublicationCount, Name = form.Name, Description = form.Description, FieldsJson = form.FieldsJson };
+        form.DraftRevision++;
+        form.UpdatedAt = DateTimeOffset.UtcNow;
+        db.FormPublications.Add(publication);
+        AuditService.Append(db, "form.published", session.UserId, publication.Id.ToString(), form.OrganizationId);
+        try { await db.SaveChangesAsync(); }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { error = "This draft changed. Reload it before publishing." }); }
+        catch (DbUpdateException exception) when (exception.InnerException is Npgsql.PostgresException { SqlState: "23505" })
+        { return Results.Conflict(new { error = "Another session published this draft. Reload it before publishing." }); }
+        return Results.Ok(form);
     }
 
     private static string? Validate(FormDetails request)
@@ -70,11 +107,16 @@ public static class FormEndpoints
         form.Name = request.Name.Trim();
         form.Description = request.Description?.Trim() ?? "";
         form.UpdatedAt = DateTimeOffset.UtcNow;
+        if (request.DraftRevision.HasValue && request.DraftRevision != form.DraftRevision)
+            return Results.Conflict(new { error = "This draft changed. Reload it before saving." });
+        form.DraftRevision++;
         AuditService.Append(db, "form.updated", session.UserId, form.Id.ToString(), form.OrganizationId);
-        await db.SaveChangesAsync();
+        try { await db.SaveChangesAsync(); }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { error = "This draft changed. Reload it before saving." }); }
         return Results.Ok(form);
     }
 }
 
-public sealed record FormDetails(string Name, string? Description);
+public sealed record FormDetails(string Name, string? Description, int? DraftRevision = null);
 public sealed record FormFieldsRequest(List<FormField>? Fields, int DraftRevision);
+public sealed record PublishFormRequest(int DraftRevision);

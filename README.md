@@ -635,7 +635,7 @@ flowops/
 
 **Current stage:** Phase 1 merged into main; Phase 2 Form Builder in development on `dev/Phase2_Form`.
 
-Implemented features include separate Studio/Portal accounts and sessions, email confirmation and password reset, authenticator MFA and recovery codes, organization creation and switching, membership management, and server-side organization permissions. Studio and Portal provide the initial account and workspace interfaces; workflow builders, forms, requests, and execution belong to later phases.
+Implemented features include separate Studio/Portal accounts and sessions, email confirmation and password reset, authenticator MFA and recovery codes, organization creation and switching, membership management, and server-side organization permissions. Studio supports draft forms, field design/preview and immutable publishing; Portal lists and displays published forms for the active assigned organization. Form submissions/history, file storage and workflow execution remain upcoming work.
 
 Local services:
 

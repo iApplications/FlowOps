@@ -9,6 +9,7 @@ const fieldTypes: FormFieldType[] = ["Text", "Textarea", "Number", "Currency", "
 export function FormDesigner({ initialForm }: { initialForm: FormDraft }) {
   const [fields, setFields] = useState(initialForm.fields);
   const [revision, setRevision] = useState(initialForm.draftRevision);
+  const [publicationCount, setPublicationCount] = useState(initialForm.publicationCount);
   const [selectedId, setSelectedId] = useState<string | null>(initialForm.fields[0]?.id ?? null);
   const [preview, setPreview] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -42,6 +43,7 @@ export function FormDesigner({ initialForm }: { initialForm: FormDraft }) {
     const next = [...fields]; [next[index], next[index + direction]] = [next[index + direction], next[index]]; change(next);
   }
   async function save() {
+    if (busy) return;
     setBusy(true); setMessage(""); setFailed(false);
     try {
       const form = await apiRequest<FormDraft>(`/api/forms/${initialForm.id}/fields`, { method: "PUT", body: JSON.stringify({ fields, draftRevision: revision }) });
@@ -49,10 +51,32 @@ export function FormDesigner({ initialForm }: { initialForm: FormDraft }) {
     } catch (error) { setFailed(true); setMessage(error instanceof Error ? error.message : "Unable to save fields."); }
     finally { setBusy(false); }
   }
+  async function publish() {
+    if (busy) return;
+    if (fields.length === 0 || dirty) {
+      setFailed(true);
+      setMessage(fields.length === 0 ? "Add and save at least one field before publishing." : "Save your field changes before publishing.");
+      return;
+    }
+    if (!window.confirm("Publish the saved form for Portal members in this organization?")) return;
+    setBusy(true); setMessage(""); setFailed(false);
+    try {
+      const form = await apiRequest<FormDraft>(`/api/forms/${initialForm.id}/publish`, { method: "POST", signal: AbortSignal.timeout(15000), body: JSON.stringify({ draftRevision: revision }) });
+      setRevision(form.draftRevision); setPublicationCount(form.publicationCount);
+      setMessage(`Version ${form.publicationCount} published. Later draft edits require publishing again.`);
+    } catch (error) {
+      setFailed(true);
+      setMessage(error instanceof Error && error.name === "TimeoutError" ? "Publishing timed out. Reload the form to check whether it published before trying again." : error instanceof Error ? error.message : "Unable to publish form.");
+    }
+    finally { setBusy(false); }
+  }
   return <section className="panel-card">
     <div className="panel-header"><div><span className="panel-kicker">Draft form</span><h2>{initialForm.name}</h2><p>{dirty ? "Unsaved changes" : "All changes saved"}. Preview does not submit data.</p></div>
-      <div className="designer-actions"><button className="btn" onClick={() => setPreview(!preview)}>{preview ? "Back to designer" : "Preview"}</button>
-        <button className="btn btn-primary" disabled={busy || !dirty} onClick={save}>{busy ? "Saving…" : "Save fields"}</button></div></div>
+      <div className="designer-actions"><button type="button" className="btn" disabled={busy} onClick={() => setPreview(!preview)}>{preview ? "Back to designer" : "Preview"}</button>
+        <button className="btn btn-primary" disabled={busy || !dirty} onClick={save}>Save fields</button>
+        <button className="btn" disabled={busy || dirty || fields.length === 0} onClick={publish}>Publish version {publicationCount + 1}</button></div></div>
+    <p className="helper">{publicationCount ? `Portal displays published version ${publicationCount}.` : "Not published: this draft is visible only in Studio."} Save changes before publishing a new version.</p>
+    {fields.length === 0 && <p className="notice" role="status">This draft has no fields. You can save it empty, but add and save at least one field to publish. {publicationCount > 0 && "The existing published version remains available in Portal."}</p>}
     {message && <p className="notice" role={failed ? "alert" : "status"}>{message}</p>}
     {preview ? <FormRenderer key={JSON.stringify(fields)} fields={fields} title={initialForm.name} description={initialForm.description} /> :
       <fieldset disabled={busy} className="designer-layout">
