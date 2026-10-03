@@ -437,6 +437,112 @@ public sealed class SecurityTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Https_sessions_use_secure_http_only_cookies_for_each_surface()
+    {
+        foreach (var surface in new[] { "Studio", "Portal" })
+        {
+            using var client = NewClient();
+            var csrf = await client.GetAsync("/api/auth/csrf");
+            var cookie = Assert.Single(csrf.Headers.GetValues("Set-Cookie"), value => value.StartsWith("FlowOps.Csrf="));
+            Assert.Contains("secure", cookie.ToLowerInvariant());
+            Assert.Contains("httponly", cookie.ToLowerInvariant());
+            Assert.Contains("samesite=strict", cookie.ToLowerInvariant());
+            await RegisterAndLogin(client, "cookie-flags@example.test", surface);
+            var login = await Mutate(client, HttpMethod.Post, "/api/auth/login",
+                new { email = "cookie-flags@example.test", password = "SecurePass123!", surface });
+            Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+            var sessionCookie = Assert.Single(login.Headers.GetValues("Set-Cookie"),
+                value => value.StartsWith($"FlowOps.Session.{surface}="));
+            Assert.Contains("secure", sessionCookie.ToLowerInvariant());
+            Assert.Contains("httponly", sessionCookie.ToLowerInvariant());
+            Assert.Contains("samesite=lax", sessionCookie.ToLowerInvariant());
+            Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/auth/me")).StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task Admin_can_manage_portal_members_but_cannot_remove_owner_or_assign_admin()
+    {
+        using var owner = NewClient();
+        using var admin = NewClient();
+        using var member = NewClient();
+        await RegisterAndLogin(owner, "permissions-owner@example.test");
+        await RegisterAndLogin(admin, "permissions-admin@example.test");
+        await RegisterAndLogin(member, "permissions-member@example.test", "Portal");
+        var organizationId = await CreateOrganization(owner, "Permissions Workspace");
+        foreach (var client in new[] { owner, admin })
+        {
+            var setup = await client.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+            Assert.Equal(HttpStatusCode.OK, (await Mutate(client, HttpMethod.Post, "/api/auth/mfa/enable",
+                new { code = AuthenticatorCode(setup.GetProperty("sharedKey").GetString()!) })).StatusCode);
+        }
+        Assert.Equal(HttpStatusCode.Created, (await Mutate(owner, HttpMethod.Post,
+            $"/api/organizations/{organizationId}/members", new { email = "permissions-admin@example.test", role = "Admin" })).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await Mutate(admin, HttpMethod.Post,
+            $"/api/organizations/{organizationId}/activate")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await admin.GetAsync("/api/studio/access")).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await Mutate(admin, HttpMethod.Post,
+            $"/api/organizations/{organizationId}/members", new { email = "permissions-member@example.test", role = "Member" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(admin, HttpMethod.Post,
+            $"/api/organizations/{organizationId}/members", new { email = "permissions-owner@example.test", role = "Admin" })).StatusCode);
+        var people = await admin.GetFromJsonAsync<JsonElement>($"/api/organizations/{organizationId}/members");
+        var ownerId = people.EnumerateArray().Single(x => x.GetProperty("role").GetString() == "Owner").GetProperty("userId").GetString();
+        var memberId = people.EnumerateArray().Single(x => x.GetProperty("role").GetString() == "Member").GetProperty("userId").GetString();
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(admin, HttpMethod.Delete,
+            $"/api/organizations/{organizationId}/members/{ownerId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(owner, HttpMethod.Delete,
+            $"/api/organizations/{organizationId}/members/{ownerId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await Mutate(admin, HttpMethod.Delete,
+            $"/api/organizations/{organizationId}/members/{memberId}")).StatusCode);
+        Assert.Empty((await member.GetFromJsonAsync<JsonElement>("/api/organizations")).EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Expired_session_cannot_access_protected_endpoints()
+    {
+        using var client = NewClient();
+        await RegisterAndLogin(client, "expired@example.test");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+            var session = await db.BrowserSessions.SingleAsync();
+            session.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+            await db.SaveChangesAsync();
+        }
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/auth/me")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/organizations")).StatusCode);
+    }
+
+    [Theory]
+    [InlineData("Studio")]
+    [InlineData("Portal")]
+    public async Task Five_failed_passwords_lock_account_until_lockout_expires(string surface)
+    {
+        using var client = NewClient();
+        const string email = "lockout@example.test";
+        await RegisterAndLogin(client, email, surface);
+        await Mutate(client, HttpMethod.Post, "/api/auth/logout");
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            var response = await Mutate(client, HttpMethod.Post, "/api/auth/login",
+                new { email, password = "WrongPassword123!", surface });
+            Assert.Equal(attempt == 5 ? (HttpStatusCode)423 : HttpStatusCode.Unauthorized, response.StatusCode);
+        }
+        Assert.Equal((HttpStatusCode)423, (await Mutate(client, HttpMethod.Post, "/api/auth/login",
+            new { email, password = "SecurePass123!", surface })).StatusCode);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<FlowUser>>();
+            var user = (await FlowOps.Api.Auth.AuthEndpoints.FindAccount(users, email, surface))!;
+            Assert.InRange(user.LockoutEnd!.Value - DateTimeOffset.UtcNow, TimeSpan.FromMinutes(14), TimeSpan.FromMinutes(15));
+            // Advance only the test account's deadline; no wall-clock wait or policy bypass in production.
+            Assert.True((await users.SetLockoutEndDateAsync(user, DateTimeOffset.UtcNow.AddSeconds(-1))).Succeeded);
+        }
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(client, HttpMethod.Post, "/api/auth/login",
+            new { email, password = "SecurePass123!", surface })).StatusCode);
+    }
+
+    [Fact]
     public async Task Password_reset_revokes_existing_sessions()
     {
         using var client = NewClient();
