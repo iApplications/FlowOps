@@ -126,4 +126,4 @@ dotnet test FlowOps.slnx -c Release
 docker compose config
 ```
 
-The automated API tests use an in-memory SQLite database for authentication, CSRF, session, MFA recovery-code, password-reset, and cross-organization checks. Windows Smart App Control intermittently blocked freshly built test DLLs on this machine; if that happens, run the tests in your internal test environment. Run the PostgreSQL migration and the Studio/Portal browser flows locally before committing Phase 1; Docker and PostgreSQL have not been exercised on this machine.
+The automated API tests use an in-memory SQLite database for authentication, CSRF, separate Studio/Portal accounts and sessions, MFA, password-reset, and cross-organization checks. The latest local run passed 11 tests. PostgreSQL migrations have been applied locally, and the Studio/Portal browser flows have undergone internal testing. Docker checks remain separate from the local Windows PostgreSQL setup. Complete internal testing before committing Phase 1.

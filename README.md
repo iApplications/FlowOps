@@ -123,6 +123,18 @@ FlowOps Portal ─────┘
 
 Studio and Portal are separate user experiences, **not separate backends or duplicated products**.
 
+### Accounts and organization access
+
+Studio and Portal use independent accounts on the shared backend. The same email can register once on each site, with separate passwords, email confirmation, password resets, MFA, organization memberships, and browser sessions.
+
+- **Studio:** Business owners and administrators create organizations and manage people. After confirming email, a new Studio account creates its workspace as Owner and sets up MFA before entering management features.
+- **Portal:** Customers and participants use organizations assigned through Studio. Portal does not provide organization creation or member management.
+- **Assignments:** Studio adds a confirmed Portal account as **Member (Portal)** or a confirmed Studio account as **Admin (Studio)**. Assigning a role does not convert an account between sites.
+- **Organization isolation:** Creating an organization selects it and adds only its creator as Owner. People from another organization are not copied. Portal lists only organizations assigned to its signed-in account.
+- **Removal:** Owners can remove Admins and Members; Admins can remove Members. The Owner cannot be removed. Removing membership removes that organization's access.
+
+See [Local development](docs/DEVELOPMENT.md) for startup commands, database migrations, and testing.
+
 ---
 
 ## AI-Assisted Workflow Creation
@@ -620,7 +632,20 @@ flowops/
 
 ## Status
 
-**Current stage:** Phase 1 authentication and organizations in development
+**Current stage:** Phase 1 authentication and organizations implemented; internal testing in progress.
+
+Implemented features include separate Studio/Portal accounts and sessions, email confirmation and password reset, authenticator MFA and recovery codes, organization creation and switching, membership management, and server-side organization permissions. Studio and Portal provide the initial account and workspace interfaces; workflow builders, forms, requests, and execution belong to later phases.
+
+Local services:
+
+| Service | Address |
+|---|---|
+| Studio | http://localhost:3000 |
+| Portal | http://localhost:3001 |
+| API / Swagger | http://localhost:5050/swagger |
+| Mailpit inbox | http://localhost:8025 |
+
+The account separation migration preserves known Studio signups and existing Owners/Admins as Studio accounts, classifies remaining legacy accounts as Portal accounts, and requires signing in again. Register independently on the other site if access to both is needed.
 
 No production deployment is required during the early development phases.
 
