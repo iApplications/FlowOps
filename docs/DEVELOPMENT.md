@@ -1,6 +1,6 @@
 # Local Development
 
-Phase 1 runs Studio, Portal, and the API on localhost. PostgreSQL can run locally on Windows or in Docker Compose. Mailpit is available through Compose for email testing. Workflow execution belongs to later phases.
+Studio, Portal, and the API run on localhost. They currently provide Phase 1 accounts and organizations and the Phase 2 Form Builder: drafts, designer, publishing, submissions and file uploads. PostgreSQL can run locally on Windows or in Docker Compose. Mailpit is available through Compose for email testing. Workflow execution belongs to later phases.
 
 Studio and Portal have independent accounts. The same email can register once on each site with separate passwords, confirmation/reset tokens, MFA keys, memberships and browser sessions. Authentication requests specify `surface`; browser API requests and server page checks send `X-FlowOps-Surface` to select the site's session cookie. The selector never grants account permissions.
 
@@ -153,13 +153,13 @@ Local HTTPS transport checks passed for both login pages, API health, and both w
 
 Local HTTPS validates development TLS and cookie behavior. Deployment certificate chains, TLS termination, trusted forwarding headers, and production HSTS still require verification in the intended deployment environment.
 
-### Phase 1 branch workflow
+### Branch workflow
 
-`dev/Phase1_Authentication` is the Phase 1 integration branch. Create each Phase 1 work branch from it and target pull requests back to it, rather than `main`. The current verification branch is `feat/phase1-security-verification`.
+Each phase has an integration branch: `dev/Phase1_Authentication` (merged into `main`) and `dev/Phase2_Form` (implementation complete; final acceptance pending). Create each work branch from the current phase's integration branch and target pull requests back to it, rather than `main`. Phase-specific delivery and test checklists live in documents such as [Phase 2](PHASE2.md); status is tracked in [Progress](PROGRESS.md).
 
-Keep code changes uncommitted until internal testing passes and commit approval is given. Merge the integration branch to `main` only after all core Phase 1 deliverables and acceptance checks are complete.
+Keep code changes uncommitted until internal testing passes and commit approval is given. Merge an integration branch to `main` only after all core deliverables and acceptance checks of that phase are complete.
 
-Phase 1 completion checks:
+Phase 1 completion checks (completed and merged):
 
 - Automated authentication, account separation, MFA, tenant isolation and permission tests pass.
 - Automated checks confirm session expiry, five-attempt lockout expiry for both account types, and Admin/Owner removal boundaries.

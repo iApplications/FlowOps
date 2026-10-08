@@ -4,7 +4,7 @@
 
 Phase 2 integration branch: `dev/Phase2_Form`. Create work branches from it and target their PRs back to it. Merge to `main` after Phase 2 implementation, internal testing and approval. Do not commit automatically.
 
-First work branch: `feat/phase2-form-foundation`.
+Merged work branches: `feat/phase2-form-foundation` (#6), `feat/phase2-field-designer` (#7), `feat/phase2-form-publishing` (#8), `feat/phase2-form-submissions` (#9) and `fix/review-hardening` (#10).
 
 ## Delivery sequence
 
@@ -16,12 +16,15 @@ First work branch: `feat/phase2-form-foundation`.
 
 ## Current implementation
 
-Draft library, field designer/preview, immutable publishing, Portal submissions, submission history and local file uploads/downloads are implemented. Submissions and uploads were accepted on 2026-10-08 and merged into `dev/Phase2_Form` (PR #9). Code review fixes follow on `fix/review-hardening`. Preview validates inputs locally and does not submit or upload data. See [Progress](PROGRESS.md) for implementation, test and merge status.
+All five delivery steps are implemented and merged into `dev/Phase2_Form`: draft library, field designer/preview, immutable publishing, Portal submissions, submission history and local file uploads/downloads. Code review hardening was merged in #10. Preview validates inputs locally and does not submit or upload data. Remaining before merging into `main`: the [final Phase 2 acceptance](PROGRESS.md#final-phase-2-acceptance) pass on the merged branch.
+
+The internal test checklists below are kept as regression guides for each slice. They reflect current behavior, including the review hardening: mandatory draft revisions, no identical republishing, and latest-version-only submissions.
 
 ## Internal test: draft library
 
 - Sign in to Studio as an Owner/Admin with MFA satisfied.
 - Open Forms from the Studio sidebar (`/forms`); Overview contains workspace/account management only. Create a draft, edit its name and description, and refresh to check persistence.
+- Edit the same draft's name in two tabs: the second save must be rejected with "This draft changed. Reload it before saving." The API requires the current `draftRevision` for every metadata update.
 - Switch organizations: the draft must appear only in its owning organization.
 - Portal accounts and Studio sessions without required MFA cannot access the draft API.
 - Empty/long names and long descriptions are rejected; create/update append audit metadata.

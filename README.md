@@ -634,9 +634,15 @@ flowops/
 
 ## Status
 
-**Current stage:** Phase 1 merged into main; Phase 2 Form Builder in development on `dev/Phase2_Form`.
+**Current stage:** Phase 1 merged into main. Phase 2 Form Builder is implementation complete on `dev/Phase2_Form`, with final acceptance and the merge into main pending. Phase 3 Workflow Designer is next. See [Progress](docs/PROGRESS.md).
 
-Implemented features include separate Studio/Portal accounts and sessions, email confirmation and password reset, authenticator MFA and recovery codes, organization creation and switching, membership management, and server-side organization permissions. Studio supports draft forms, field design/preview, immutable publishing and organization submission history. Portal lists published forms for the active assigned organization, submits validated responses with file attachments and shows each user's own history. Both surfaces provide authorized attachment downloads. Submissions/uploads await internal acceptance; workflow execution remains upcoming work.
+Implemented features:
+- **Accounts and organizations:** separate Studio/Portal accounts and sessions, email confirmation and password reset, authenticator MFA and recovery codes, account lockout (including unconfirmed accounts), organization creation and switching, membership management, and server-side organization permissions.
+- **Studio:** draft forms with revision-checked edits, a field designer for eight field types with preview, immutable publishing (an identical draft cannot be republished), and organization submission history.
+- **Portal:** lists the latest published version of each form for the active assigned organization, submits server-validated responses with file attachments (pages showing an outdated version must reload), and shows each user's own history.
+- **Both surfaces:** authorized attachment downloads.
+
+Workflow design and execution remain upcoming work.
 
 Local services:
 
@@ -646,6 +652,8 @@ Local services:
 | Portal | http://localhost:3001 |
 | API / Swagger | http://localhost:5050/swagger |
 | Mailpit inbox | http://localhost:8025 |
+
+For local HTTPS verification, `scripts/start-local-https.ps1` serves Studio at https://localhost:3443, Portal at https://localhost:3444 and the API at https://localhost:5443. See [Local HTTPS verification](docs/DEVELOPMENT.md#local-https-verification).
 
 The account separation migration preserves known Studio signups and existing Owners/Admins as Studio accounts, classifies remaining legacy accounts as Portal accounts, and requires signing in again. Register independently on the other site if access to both is needed.
 
