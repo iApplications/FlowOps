@@ -16,7 +16,7 @@ First work branch: `feat/phase2-form-foundation`.
 
 ## Current implementation
 
-Draft library, field designer/preview, immutable publishing, Portal submissions, submission history and local file uploads/downloads are implemented. Current work branch: `feat/phase2-form-submissions`. Submissions and uploads are awaiting internal browser acceptance and commit. Preview validates inputs locally and does not submit or upload data. See [Progress](PROGRESS.md) for implementation, test and merge status.
+Draft library, field designer/preview, immutable publishing, Portal submissions, submission history and local file uploads/downloads are implemented. Current work branch: `feat/phase2-form-submissions` (committed as `926ecf2`). Server-side acceptance of submissions and uploads passed on 2026-10-08. Browser acceptance passed on the same day; the slice is ready to merge into `dev/Phase2_Form`. Preview validates inputs locally and does not submit or upload data. See [Progress](PROGRESS.md) for implementation, test and merge status.
 
 ## Internal test: draft library
 

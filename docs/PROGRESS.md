@@ -1,14 +1,14 @@
 # FlowOps implementation progress
 
-Updated: 2026-10-07
+Updated: 2026-10-08
 
 ## Branch and approval status
 
 - Phase 1 was internally tested and merged into `main`.
 - Phase 2 integration branch: `dev/Phase2_Form`.
 - Current work branch: `feat/phase2-form-submissions`, based on the merged publishing slice (`9212aa0`).
-- Submissions, history and file uploads are combined in the current work branch and remain uncommitted.
-- Complete internal testing, then commit and open a PR into `dev/Phase2_Form`. Merge Phase 2 into `main` after final acceptance. No automatic commits or pushes.
+- Submissions, history and file uploads are committed on the work branch (`926ecf2`) and pushed to `origin`.
+- API-level and browser acceptance passed on 2026-10-08. Next: merge the PR into `dev/Phase2_Form`. Merge Phase 2 into `main` after final acceptance. No automatic commits or pushes.
 
 ## Delivery progress
 
@@ -19,9 +19,9 @@ Updated: 2026-10-07
 | Phase 2 draft library and metadata | Complete | Tested and merged into Phase 2 |
 | Phase 2 field designer and preview | Complete: eight field types, validation, stable IDs, reorder/remove | Tested and merged into Phase 2 |
 | Phase 2 immutable publishing and Portal viewing | Complete: published snapshots, republishing, organization access | Tested and merged into Phase 2 |
-| Phase 2 submissions | Complete: exact publication ID, server validation, duplicate request handling | Awaiting internal browser checks |
-| Phase 2 submission history | Complete: Portal personal history, Studio organization history, original fields/values | Awaiting internal browser checks |
-| Phase 2 local file uploads/downloads | Complete: required/optional files, validation, protected downloads | Awaiting internal browser checks |
+| Phase 2 submissions | Complete: exact publication ID, server validation, duplicate request handling | Accepted 2026-10-08; PR into Phase 2 pending |
+| Phase 2 submission history | Complete: Portal personal history, Studio organization history, original fields/values | Accepted 2026-10-08; PR into Phase 2 pending |
+| Phase 2 local file uploads/downloads | Complete: required/optional files, validation, protected downloads | Accepted 2026-10-08; PR into Phase 2 pending |
 | Phase 2 final acceptance and merge to main | Pending | After the combined slice is tested and merged |
 | Phase 3 workflows and subsequent roadmap phases | Pending | Not started |
 
@@ -60,19 +60,21 @@ Development storage defaults to `%LOCALAPPDATA%\FlowOps\Uploads`. Override with 
 - The API accepts a valid 12 MB response spread across two files and rejects a response totaling more than 20 MB. The Portal proxy configuration allows upload bodies up to 21 MB including multipart overhead; confirm that route in the browser checklist.
 - Access checks include anonymous users, another Portal user, another organization and revoked membership; historical files remain available after republishing.
 - Lint, TypeScript checks and production builds for Studio and Portal pass.
-- Internal browser testing of the combined submissions/uploads slice is pending. Use [the Phase 2 checklist](PHASE2.md#internal-test-file-uploads-and-downloads) and the submissions checklist immediately above it.
+2026-10-08: tests (21), lint, typecheck and production builds re-run and passed on `926ecf2`. An API-level acceptance script then ran against the live local HTTPS stack (PostgreSQL, API on 5443, Studio/Portal proxies on 3443/3444, Mailpit). It used fresh Studio Owner (TOTP MFA), Portal and second-organization accounts: **66 of 67 checks passed**.
+
+- Passed: all eight field types; PDF/PNG/JPG/JPEG/TXT/CSV uploads; byte-identical downloads from Portal and Studio with attachment/original-filename, no-store and nosniff headers; 21 rejection cases (missing/zero-byte/disallowed/oversized files, text renamed as PDF/PNG/JPG, non-UTF-8 text, mixed good+bad files, duplicate/unknown File fields, fabricated attachment references, and every value-validation rule), with no history rows or stored files left behind; 13 MB and exactly 20 MB totals accepted through the Portal proxy; idempotent retries (same content returns the saved response; changed file, changed filename or another user's reuse returns 409); history/detail/download privacy for another Portal user, anonymous users, another organization, Portal sessions on Studio APIs, and removed members; Studio organization switching; republishing with a File field removed/changed keeps the old schema and attachments, and a page still showing v1 submits against v1.
+- Not passed as written: a 21 MB total sent through the Portal proxy is rejected without saving anything, but the client receives a dropped connection instead of the API's "Files must total 20 MB or less" response. The Next.js proxy aborts when the API answers before reading the full body (the same happens for an unauthenticated upload that gets a 401). Browser users are not affected: the Portal form blocks totals over 20 MB and oversized files before uploading. Accepted as a known limitation.
+- The run left test accounts `p2-*-muywls0e@flowops.test`, organizations `P2 Acceptance A/B muywls0e` and ~34 MB of attachments in local development storage.
 
 ## Remaining acceptance checks
 
-- [ ] Submit valid responses with required and optional files, then refresh and inspect history in both sites.
-- [ ] Download original files from Portal and Studio; verify names and contents.
-- [ ] Reject missing/empty/oversized/disallowed files and text renamed as PDF/image.
-- [ ] Test multiple files totaling more than 10 MB and up to 20 MB through Portal; reject totals over 20 MB.
-- [ ] Confirm invalid responses do not leave history entries or attachments.
-- [ ] Confirm Portal history/download privacy and organization switching, including membership removal.
-- [ ] Confirm old response schemas and files remain unchanged after republishing.
-- [ ] Verify every field type and normal account flows with the API running over local HTTPS.
-- [ ] Review changes, commit with user approval, and merge the combined slice into `dev/Phase2_Form`.
+Server behavior is covered by the 2026-10-08 API acceptance run. On 2026-10-08 the user reported that the visual browser checks below passed over local HTTPS.
+
+- [x] Portal over HTTPS: submit a form with all eight field types and files; history appears below the form and survives refresh; Download saves the original file.
+- [x] Portal: invalid values and bad files (wrong type, too large, totals over 20 MB) show visible feedback; inputs and the button are disabled while a submission is in flight.
+- [x] Studio: submission history under the designer shows submitter/version; response detail shows original labels/values and downloads attachments.
+- [x] Studio Preview: choosing a file and checking validation creates no response or stored attachment.
+- [ ] Merge the PR from `feat/phase2-form-submissions` into `dev/Phase2_Form`.
 - [ ] Finish Phase 2 acceptance before merging into `main`.
 
 ## Current limitations
@@ -80,4 +82,5 @@ Development storage defaults to `%LOCALAPPDATA%\FlowOps\Uploads`. Override with 
 - File validation checks basic type signatures and encoding; full document/image parsing and malware scanning are not implemented.
 - Storage is local to the API host. Keep its directory persistent and back it up with PostgreSQL.
 - An abrupt process/host failure between file writes and database commit can leave unreferenced files; automatic crash recovery cleanup is not implemented.
+- Through the Next.js proxy, an upload the API rejects before reading the body (over 20 MB total, or an expired session) reaches non-browser clients as a dropped connection rather than a JSON error. The Portal form checks sizes before uploading. An expired Portal session during an upload shows a generic network error instead of a sign-in prompt.
 - Workflow execution, approvals and workflow integration belong to later phases.
