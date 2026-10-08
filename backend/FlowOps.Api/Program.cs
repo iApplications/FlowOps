@@ -224,6 +224,7 @@ app.Use(async (context, next) =>
 app.MapAuthEndpoints();
 app.MapOrganizationEndpoints();
 FlowOps.Api.Forms.FormEndpoints.MapFormEndpoints(app);
+FlowOps.Api.Workflows.WorkflowEndpoints.MapWorkflowEndpoints(app);
 app.MapGet("/api/health", () => Results.Ok(new ApiHealthResponse("Healthy", "FlowOps.Api")))
     .WithName("GetApiHealth")
     .WithSummary("Check the FlowOps API status")

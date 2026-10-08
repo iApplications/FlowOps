@@ -1053,6 +1053,112 @@ public sealed class SecurityTests : IAsyncLifetime
         Assert.Equal(enabled ? HttpStatusCode.Unauthorized : HttpStatusCode.TooManyRequests, await Login("203.0.113.2"));
     }
 
+    [Fact]
+    public async Task Workflows_require_studio_mfa_stay_in_the_active_organization_and_check_revisions()
+    {
+        using var studio = NewClient();
+        using var portal = NewClient();
+        await RegisterAndLogin(studio, "workflow-owner@example.test");
+        await RegisterAndLogin(portal, "workflow-member@example.test", "Portal");
+        var organization = await CreateOrganization(studio, "Workflow Workspace");
+        Assert.Equal(HttpStatusCode.Forbidden, (await studio.GetAsync("/api/workflows")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(studio, HttpMethod.Post, "/api/workflows", new { name = "Before MFA" })).StatusCode);
+        var setup = await studio.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+        await Mutate(studio, HttpMethod.Post, "/api/auth/mfa/enable", new { code = AuthenticatorCode(setup.GetProperty("sharedKey").GetString()!) });
+
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Post, "/api/workflows", new { name = " " })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Post, "/api/workflows", new { name = "Expense approval" }, addCsrf: false)).StatusCode);
+        var created = await Mutate(studio, HttpMethod.Post, "/api/workflows", new { name = " Expense approval ", description = "Manager approval" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var workflow = await created.Content.ReadFromJsonAsync<JsonElement>();
+        var workflowId = workflow.GetProperty("id").GetGuid();
+        Assert.Equal("Expense approval", workflow.GetProperty("name").GetString());
+        Assert.Equal(0, workflow.GetProperty("revision").GetInt32());
+        Assert.Equal(0, workflow.GetProperty("publishedVersions").GetInt32());
+        // Every new workflow starts with Draft v1 holding a connected Start → End graph.
+        var draft = workflow.GetProperty("draft");
+        Assert.Equal(1, draft.GetProperty("versionNumber").GetInt32());
+        Assert.Equal("Draft", draft.GetProperty("status").GetString());
+        Assert.Equal(0, draft.GetProperty("draftRevision").GetInt32());
+        var graph = draft.GetProperty("graph");
+        Assert.Equal(1, graph.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(["Start", "End"], graph.GetProperty("nodes").EnumerateArray().Select(x => x.GetProperty("type").GetString()));
+        Assert.Equal("Manual", graph.GetProperty("nodes")[0].GetProperty("config").GetProperty("trigger").GetString());
+        var connection = Assert.Single(graph.GetProperty("connections").EnumerateArray());
+        Assert.Equal(("start", "next", "end"), (connection.GetProperty("source").GetString(), connection.GetProperty("sourceHandle").GetString(), connection.GetProperty("target").GetString()));
+        var listed = Assert.Single((await studio.GetFromJsonAsync<JsonElement>("/api/workflows")).EnumerateArray());
+        Assert.Equal(1, listed.GetProperty("draftVersionNumber").GetInt32());
+
+        // Metadata edits must name the revision they were made against; stale revisions change nothing.
+        var path = $"/api/workflows/{workflowId}";
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Put, path, new { name = "No revision" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(studio, HttpMethod.Put, path, new { name = "Stale", revision = 5 })).StatusCode);
+        Assert.Equal("Expense approval", (await studio.GetFromJsonAsync<JsonElement>(path)).GetProperty("name").GetString());
+        var renamed = await Mutate(studio, HttpMethod.Put, path, new { name = "Expense approval v1", description = "Updated", revision = 0 });
+        Assert.Equal(HttpStatusCode.OK, renamed.StatusCode);
+        Assert.Equal(1, (await renamed.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("revision").GetInt32());
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(studio, HttpMethod.Put, path, new { name = "Second tab", revision = 0 })).StatusCode);
+
+        // Portal accounts never reach workflow design, even as members of the organization.
+        Assert.Equal(HttpStatusCode.Created, (await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/members",
+            new { email = "workflow-member@example.test", role = "Member" })).StatusCode);
+        await Mutate(portal, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        Assert.Equal(HttpStatusCode.Forbidden, (await portal.GetAsync("/api/workflows")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await portal.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(portal, HttpMethod.Put, path, new { name = "Portal edit", revision = 1 })).StatusCode);
+        using var anonymous = NewClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/workflows")).StatusCode);
+
+        // Another organization cannot see or change the workflow by ID.
+        var other = await CreateOrganization(studio, "Other Workflow Workspace");
+        Assert.Empty((await studio.GetFromJsonAsync<JsonElement>("/api/workflows")).EnumerateArray());
+        Assert.Equal(HttpStatusCode.NotFound, (await studio.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Mutate(studio, HttpMethod.Put, path, new { name = "Cross organization", revision = 1 })).StatusCode);
+        await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        Assert.Equal("Expense approval v1", (await studio.GetFromJsonAsync<JsonElement>(path)).GetProperty("name").GetString());
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        Assert.True(await db.AuditEvents.AnyAsync(x => x.Action == "workflow.created" && x.SubjectId == workflowId.ToString() && x.OrganizationId == organization));
+        Assert.Equal(1, await db.AuditEvents.CountAsync(x => x.Action == "workflow.updated" && x.SubjectId == workflowId.ToString()));
+        Assert.False(await db.WorkflowDefinitions.AnyAsync(x => x.OrganizationId == other));
+    }
+
+    [Fact]
+    public async Task Published_workflow_versions_are_immutable_and_each_workflow_has_one_draft()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        var organization = new Organization { Name = "Versioned Workflows" };
+        var workflow = new FlowOps.Api.Workflows.WorkflowDefinition { OrganizationId = organization.Id, Name = "Expense approval" };
+        var published = new FlowOps.Api.Workflows.WorkflowVersion { WorkflowDefinitionId = workflow.Id, OrganizationId = organization.Id, VersionNumber = 1,
+            Status = FlowOps.Api.Workflows.WorkflowVersionStatus.Published, PublishedAt = DateTimeOffset.UtcNow,
+            GraphJson = JsonSerializer.Serialize(FlowOps.Api.Workflows.WorkflowGraph.Starter()) };
+        var draft = new FlowOps.Api.Workflows.WorkflowVersion { WorkflowDefinitionId = workflow.Id, OrganizationId = organization.Id, VersionNumber = 2,
+            GraphJson = published.GraphJson };
+        db.AddRange(organization, workflow, published, draft);
+        await db.SaveChangesAsync();
+
+        // Drafts stay editable.
+        draft.GraphJson = JsonSerializer.Serialize(FlowOps.Api.Workflows.WorkflowGraph.Empty);
+        draft.DraftRevision++;
+        await db.SaveChangesAsync();
+
+        published.GraphJson = "{}";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
+        db.Entry(published).State = EntityState.Unchanged;
+        published.Status = FlowOps.Api.Workflows.WorkflowVersionStatus.Draft;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
+        db.Entry(published).Reload();
+        db.Remove(published);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
+        db.Entry(published).State = EntityState.Unchanged;
+
+        // The database also refuses a second editable draft for the same workflow.
+        db.Add(new FlowOps.Api.Workflows.WorkflowVersion { WorkflowDefinitionId = workflow.Id, OrganizationId = organization.Id, VersionNumber = 3 });
+        await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+    }
+
     // Test requests have no peer address; present them as coming from a co-located (loopback) proxy.
     private sealed class LoopbackPeer : IStartupFilter
     {
