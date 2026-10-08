@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  experimental: { proxyClientMaxBodySize: "21mb" },
   distDir: process.env.FLOWOPS_HTTPS_TEST === "1" ? ".next-https" : ".next",
   transpilePackages: ["@flowops/ui", "@flowops/api-client", "@flowops/types"],
   async rewrites() {

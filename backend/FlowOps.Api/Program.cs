@@ -21,6 +21,7 @@ builder.Services.AddHealthChecks();
 builder.Services.AddOpenApi();
 builder.Services.AddSingleton<IEmailDelivery, SmtpEmailDelivery>();
 builder.Services.AddHttpContextAccessor();
+builder.Services.AddSingleton<FlowOps.Api.Forms.LocalFileStorage>();
 builder.Services.AddScoped<IAuthorizationHandler, OrganizationPermissionHandler>();
 builder.Services.AddAuthorization(options =>
 {
@@ -177,6 +178,17 @@ app.Use(async (context, next) =>
 app.UseAuthorization();
 app.Use(async (context, next) =>
 {
+    if (context.GetEndpoint()?.Metadata.GetMetadata<FlowOps.Api.Forms.UploadRequestLimit>() is { } uploadLimit)
+    {
+        var sizeFeature = context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>();
+        if (sizeFeature is { IsReadOnly: false }) sizeFeature.MaxRequestBodySize = uploadLimit.MaxBytes;
+        if (context.Request.ContentLength > uploadLimit.MaxBytes)
+        {
+            context.Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
+            await context.Response.WriteAsJsonAsync(new { error = "Files must total 20 MB or less." });
+            return;
+        }
+    }
     if (context.Request.Path.StartsWithSegments("/api") &&
         !HttpMethods.IsGet(context.Request.Method) &&
         !HttpMethods.IsHead(context.Request.Method) &&

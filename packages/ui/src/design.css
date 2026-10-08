@@ -220,6 +220,10 @@ a { color: inherit; text-decoration: none; }
 .designer-palette { display: flex; flex-direction: column; gap: 10px; }
 .designer-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .form-navigation { margin-bottom: 16px; }
+.submission-detail { margin-top: 24px; padding: 20px; background: var(--soft); border: 1px solid var(--line); border-radius: 12px; }
+.submission-detail dl { display: grid; gap: 16px; }
+.submission-detail dt { font-weight: 700; font-size: 13px; }
+.submission-detail dd { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .form-navigation .btn { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 2px 4px rgba(0, 0, 0, .12); }
 .form-navigation .btn:hover { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; }
 .designer-field { padding: 14px; margin: 12px 0; border: 1px solid var(--line); border-radius: 12px; }

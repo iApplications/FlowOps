@@ -12,3 +12,4 @@ obj/
 !.env.*.example
 *.user
 *.suo
+App_Data/Uploads/

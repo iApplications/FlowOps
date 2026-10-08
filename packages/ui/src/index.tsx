@@ -26,3 +26,4 @@ export function SurfaceShell({ title, description, children }: SurfaceShellProps
 export { FormLibrary } from "./form-library";
 export { FormDesigner } from "./form-designer";
 export { FormRenderer } from "./form-renderer";
+export { PortalForm, SubmissionHistory } from "./form-submissions";

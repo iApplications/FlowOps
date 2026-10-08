@@ -11,7 +11,7 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   const headers = new Headers(options.headers);
   if (typeof document !== "undefined")
     headers.set("X-FlowOps-Surface", document.body.classList.contains("surface-studio") ? "Studio" : "Portal");
-  if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  if (options.body && !(options.body instanceof FormData) && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
     const csrfResponse = await fetch("/api/auth/csrf", { signal: options.signal, headers: { "X-FlowOps-Surface": headers.get("X-FlowOps-Surface") ?? "Portal" }, credentials: "same-origin", cache: "no-store" });
     if (!csrfResponse.ok) throw new ApiError(csrfResponse.status, "Unable to start a secure request.");
@@ -38,4 +38,14 @@ export async function getPlatformHealth(baseUrl: string): Promise<PlatformHealth
   }
 
   return (await response.json()) as PlatformHealth;
+}
+
+export async function apiDownload(path: string): Promise<Blob> {
+  const surface = document.body.classList.contains("surface-studio") ? "Studio" : "Portal";
+  const response = await fetch(path, { headers: { "X-FlowOps-Surface": surface }, credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(60000) });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null;
+    throw new ApiError(response.status, body?.error ?? `Download failed (${response.status}).`);
+  }
+  return response.blob();
 }

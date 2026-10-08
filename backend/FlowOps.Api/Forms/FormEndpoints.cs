@@ -8,6 +8,7 @@ public static class FormEndpoints
 {
     public static void MapFormEndpoints(this WebApplication app)
     {
+        app.MapSubmissionEndpoints();
         var group = app.MapGroup("/api/forms").WithTags("Forms").RequireAuthorization(Permissions.StudioAccess);
         group.MapGet("/", async (HttpContext context, FlowOpsDbContext db) =>
         {
