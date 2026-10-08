@@ -6,9 +6,9 @@ Updated: 2026-10-08
 
 - Phase 1 was internally tested and merged into `main`.
 - Phase 2 integration branch: `dev/Phase2_Form`.
-- Current work branch: `feat/phase2-form-submissions`, based on the merged publishing slice (`9212aa0`).
-- Submissions, history and file uploads are committed on the work branch (`926ecf2`) and pushed to `origin`.
-- API-level and browser acceptance passed on 2026-10-08. Next: merge the PR into `dev/Phase2_Form`. Merge Phase 2 into `main` after final acceptance. No automatic commits or pushes.
+- Submissions, history and file uploads were accepted and merged into `dev/Phase2_Form` (PR #9, `7d9ec68`).
+- Current work branch: `fix/review-hardening`, based on `dev/Phase2_Form`. It contains fixes from the 2026-10-08 code review of Phase 1 and Phase 2 (see below).
+- Browser spot-check of the hardening changes passed (user-reported, 2026-10-08). Next: merge the PR into `dev/Phase2_Form`, then complete final Phase 2 acceptance and merge into `main`. No automatic commits or pushes.
 
 ## Delivery progress
 
@@ -19,10 +19,11 @@ Updated: 2026-10-08
 | Phase 2 draft library and metadata | Complete | Tested and merged into Phase 2 |
 | Phase 2 field designer and preview | Complete: eight field types, validation, stable IDs, reorder/remove | Tested and merged into Phase 2 |
 | Phase 2 immutable publishing and Portal viewing | Complete: published snapshots, republishing, organization access | Tested and merged into Phase 2 |
-| Phase 2 submissions | Complete: exact publication ID, server validation, duplicate request handling | Accepted 2026-10-08; PR into Phase 2 pending |
-| Phase 2 submission history | Complete: Portal personal history, Studio organization history, original fields/values | Accepted 2026-10-08; PR into Phase 2 pending |
-| Phase 2 local file uploads/downloads | Complete: required/optional files, validation, protected downloads | Accepted 2026-10-08; PR into Phase 2 pending |
-| Phase 2 final acceptance and merge to main | Pending | After the combined slice is tested and merged |
+| Phase 2 submissions | Complete: exact publication ID, server validation, duplicate request handling | Accepted 2026-10-08; merged into Phase 2 (#9) |
+| Phase 2 submission history | Complete: Portal personal history, Studio organization history, original fields/values | Accepted 2026-10-08; merged into Phase 2 (#9) |
+| Phase 2 local file uploads/downloads | Complete: required/optional files, validation, protected downloads | Accepted 2026-10-08; merged into Phase 2 (#9) |
+| Code review hardening (Phase 1 + Phase 2) | Complete on `fix/review-hardening` | Automated, API and browser acceptance passed 2026-10-08; PR into Phase 2 pending |
+| Phase 2 final acceptance and merge to main | Pending | After the hardening branch is merged |
 | Phase 3 workflows and subsequent roadmap phases | Pending | Not started |
 
 ## Combined submissions and file slice
@@ -33,9 +34,27 @@ Updated: 2026-10-08
 - Local storage uses generated IDs rather than user filenames for paths, outside the web folder. History displays sanitized original filenames.
 - Portal download access is restricted to the response owner and active assigned organization. Studio access requires the active organization's Owner/Admin and MFA permissions.
 - Responses and attachment metadata are immutable. Republished schemas do not alter existing responses or downloads.
-- Retries with the same request ID and unchanged values/files return the saved response. Changed content cannot overwrite it.
+- New responses must target the latest published version. A page opened before republishing gets 409 `form_version_outdated` and must reload.
+- Retries with the same request ID and unchanged values/files return the saved response, even after republishing, without writing files again. Changed content cannot overwrite it.
 - Rejected requests clean up files already written during that request. Submission, attachment and audit rows are saved together.
 - Preview remains local and never submits or uploads data.
+
+## Code review hardening (2026-10-08)
+
+A review of the Phase 2 changes and the Phase 1 authentication/organization code found no tenant-isolation, CSRF or file-path problems. It led to these changes:
+
+- **Login abuse:** wrong passwords on unconfirmed accounts now count toward lockout. Before, they were unlimited and the 403/401 difference revealed a correct password. A successful password reset clears lockout.
+- **Rate limiting behind the proxy:** the API can trust forwarded client addresses (`ForwardedHeaders:Enabled`, off by default). The auth limit is configurable (`RateLimiting:AuthPermitLimit`). Production must place an edge proxy in front of Next.js; see [Security §12.4](SECURITY.md#124-rate-limiting-and-abuse-protection).
+- **Registration:** the account, its Studio signup claim and the audit event are committed in one transaction.
+- **Submissions:** only the latest published version is accepted. Retries are answered before files are written. JSON and file submissions share one fingerprint/retry scheme.
+- **Portal form:** after any server response other than a timeout or network failure, the next submit uses a new request ID, so a 409 no longer leaves the form stuck until reload.
+- **Form metadata:** `PUT /api/forms/{id}` now requires `draftRevision` and checks it before changing anything.
+- **Publishing:** a draft identical to the latest published version (name, description and fields) can no longer be republished (409 `no_changes`). Identical versions added nothing, and under the latest-version rule they forced open Portal pages to reload. Form responses include `hasUnpublishedChanges`; the designer disables Publish and explains why when nothing has changed.
+- **Uploads:** content is validated while streaming instead of re-reading the file; UTF-8 characters split across buffers are handled; empty folders are removed after rejections; allowed file types are defined once.
+- **Efficiency:** the security stamp is revalidated every minute (session revocation is still checked per request), the browser reuses CSRF tokens per site, Studio pages load their two API calls in parallel, and member-management endpoints no longer repeat the policy checks.
+- **Development:** the default Visual Studio launch profile again listens on `http://localhost:5050`, with a separate HTTPS profile. A Studio home page crash when the API drops mid-load was fixed. The surface restriction on the role-change endpoint is documented.
+
+Verification: 25 backend tests (4 new, others extended), lint, typecheck and production builds pass. The API acceptance script passed **72 of 72** checks against the HTTPS stack, including stale-version rejection, post-republish retries and the refused unchanged republish. The over-20 MB proxy case counts as passing because the request is rejected and nothing is saved.
 
 ## Database and storage
 
@@ -82,5 +101,5 @@ Server behavior is covered by the 2026-10-08 API acceptance run. On 2026-10-08 t
 - File validation checks basic type signatures and encoding; full document/image parsing and malware scanning are not implemented.
 - Storage is local to the API host. Keep its directory persistent and back it up with PostgreSQL.
 - An abrupt process/host failure between file writes and database commit can leave unreferenced files; automatic crash recovery cleanup is not implemented.
-- Through the Next.js proxy, an upload the API rejects before reading the body (over 20 MB total, or an expired session) reaches non-browser clients as a dropped connection rather than a JSON error. The Portal form checks sizes before uploading. An expired Portal session during an upload shows a generic network error instead of a sign-in prompt.
+- Through the Next.js proxy, an upload the API rejects before reading the body (over 20 MB total, or an expired session) reaches non-browser clients as a dropped connection or a proxy 500 rather than a JSON error (nothing is saved). The Portal form checks sizes before uploading. An expired Portal session during an upload shows a generic network error instead of a sign-in prompt.
 - Workflow execution, approvals and workflow integration belong to later phases.

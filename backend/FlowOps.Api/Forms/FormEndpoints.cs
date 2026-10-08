@@ -21,7 +21,7 @@ public static class FormEndpoints
         {
             var organizationId = AuthEndpoints.CurrentSession(context)!.ActiveOrganizationId;
             var form = await db.Forms.AsNoTracking().SingleOrDefaultAsync(x => x.Id == formId && x.OrganizationId == organizationId);
-            return form is null ? Results.NotFound(new { error = "Form not found in the active organization." }) : Results.Ok(form);
+            return form is null ? Results.NotFound(new { error = "Form not found in the active organization." }) : Results.Ok(await WithPublishState(db, form));
         });
         group.MapPut("/{formId:guid}/fields", SaveFields);
         group.MapPut("/{formId:guid}", Update);
@@ -51,6 +51,9 @@ public static class FormEndpoints
         if (form.DraftRevision != request.DraftRevision) return Results.Conflict(new { error = "This draft changed. Reload it before publishing." });
         if (form.Fields.Count == 0) return Results.BadRequest(new { error = "Add and save at least one field before publishing." });
         if (FormFieldValidation.Validate(form.Fields) is string error) return Results.BadRequest(new { error });
+        // An identical republish would add an empty version and force open Portal pages to reload for nothing.
+        if (await LatestPublication(db, form) is { } latest && SameAsDraft(latest, form))
+            return Results.Conflict(new { error = $"No changes since version {latest.VersionNumber}. Edit and save the draft before publishing.", code = "no_changes" });
         var publication = new FormPublication { FormId = form.Id, OrganizationId = form.OrganizationId,
             VersionNumber = ++form.PublicationCount, Name = form.Name, Description = form.Description, FieldsJson = form.FieldsJson };
         form.DraftRevision++;
@@ -61,7 +64,22 @@ public static class FormEndpoints
         catch (DbUpdateConcurrencyException) { return Results.Conflict(new { error = "This draft changed. Reload it before publishing." }); }
         catch (DbUpdateException exception) when (exception.InnerException is Npgsql.PostgresException { SqlState: "23505" })
         { return Results.Conflict(new { error = "Another session published this draft. Reload it before publishing." }); }
+        form.HasUnpublishedChanges = false;
         return Results.Ok(form);
+    }
+
+    private static Task<FormPublication?> LatestPublication(FlowOpsDbContext db, FormDefinition form) =>
+        db.FormPublications.AsNoTracking().Where(x => x.FormId == form.Id && x.OrganizationId == form.OrganizationId)
+            .OrderByDescending(x => x.VersionNumber).FirstOrDefaultAsync();
+
+    // Publications copy the draft's name, description and serialized fields verbatim, so exact comparison is reliable.
+    private static bool SameAsDraft(FormPublication publication, FormDefinition form) =>
+        publication.Name == form.Name && publication.Description == form.Description && publication.FieldsJson == form.FieldsJson;
+
+    private static async Task<FormDefinition> WithPublishState(FlowOpsDbContext db, FormDefinition form)
+    {
+        form.HasUnpublishedChanges = await LatestPublication(db, form) is not { } latest || !SameAsDraft(latest, form);
+        return form;
     }
 
     private static string? Validate(FormDetails request)
@@ -84,7 +102,7 @@ public static class FormEndpoints
         AuditService.Append(db, "form.fields_updated", session.UserId, form.Id.ToString(), form.OrganizationId);
         try { await db.SaveChangesAsync(); }
         catch (DbUpdateConcurrencyException) { return Results.Conflict(new { error = "This draft changed in another session. Reload it before saving." }); }
-        return Results.Ok(form);
+        return Results.Ok(await WithPublishState(db, form));
     }
 
     private static async Task<IResult> Create(FormDetails request, HttpContext context, FlowOpsDbContext db)
@@ -105,16 +123,16 @@ public static class FormEndpoints
         var form = await db.Forms.SingleOrDefaultAsync(x => x.Id == formId && x.OrganizationId == session.ActiveOrganizationId);
         if (form is null) return Results.NotFound(new { error = "Form not found in the active organization." });
         if (Validate(request) is string error) return Results.BadRequest(new { error });
+        if (request.DraftRevision is null) return Results.BadRequest(new { error = "Provide the draft revision you are editing." });
+        if (request.DraftRevision != form.DraftRevision) return Results.Conflict(new { error = "This draft changed. Reload it before saving." });
         form.Name = request.Name.Trim();
         form.Description = request.Description?.Trim() ?? "";
         form.UpdatedAt = DateTimeOffset.UtcNow;
-        if (request.DraftRevision.HasValue && request.DraftRevision != form.DraftRevision)
-            return Results.Conflict(new { error = "This draft changed. Reload it before saving." });
         form.DraftRevision++;
         AuditService.Append(db, "form.updated", session.UserId, form.Id.ToString(), form.OrganizationId);
         try { await db.SaveChangesAsync(); }
         catch (DbUpdateConcurrencyException) { return Results.Conflict(new { error = "This draft changed. Reload it before saving." }); }
-        return Results.Ok(form);
+        return Results.Ok(await WithPublishState(db, form));
     }
 }
 

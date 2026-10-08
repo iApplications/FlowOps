@@ -16,7 +16,7 @@ First work branch: `feat/phase2-form-foundation`.
 
 ## Current implementation
 
-Draft library, field designer/preview, immutable publishing, Portal submissions, submission history and local file uploads/downloads are implemented. Current work branch: `feat/phase2-form-submissions` (committed as `926ecf2`). Server-side acceptance of submissions and uploads passed on 2026-10-08. Browser acceptance passed on the same day; the slice is ready to merge into `dev/Phase2_Form`. Preview validates inputs locally and does not submit or upload data. See [Progress](PROGRESS.md) for implementation, test and merge status.
+Draft library, field designer/preview, immutable publishing, Portal submissions, submission history and local file uploads/downloads are implemented. Submissions and uploads were accepted on 2026-10-08 and merged into `dev/Phase2_Form` (PR #9). Code review fixes follow on `fix/review-hardening`. Preview validates inputs locally and does not submit or upload data. See [Progress](PROGRESS.md) for implementation, test and merge status.
 
 ## Internal test: draft library
 
@@ -53,6 +53,7 @@ Apply the `FormPublishing` migration and restart the API. Existing forms remain 
 3. Edit and save the Studio draft's name or fields. Refresh Portal: version 1 must remain unchanged.
 4. Reload the designer after editing metadata, then publish version 2. Portal now shows version 2, with one entry for the form. Earlier versions remain stored unchanged.
 5. Open a draft in two Studio tabs. Publish or save in one, then try publishing from the stale tab. It must show an error and require reloading.
+   Immediately after publishing, Publish is disabled with "The saved draft matches version N". It becomes available again only after a saved change to the fields; name/description edits from the Forms library also count. The API refuses an unchanged republish with 409 `no_changes`.
 6. Switch organizations in Portal through Overview. Forms must follow the active organization; a direct URL to another organization's form must be unavailable. Unpublished draft URLs must also be unavailable.
 7. Portal cannot edit or publish drafts. Studio publishing requires Owner/Admin access and the organization's MFA policy.
 
@@ -66,12 +67,12 @@ Apply the `FormSubmissions` migration and rebuild/restart the API. The local dev
 2. Portal: open the form, try missing required values, excessive text, out-of-range numbers/dates and an unchecked required checkbox. Valid values should submit successfully; history appears below the form. Refresh the page and open the saved response.
 3. Studio: open the same form's designer. Submission history below it shows organization responses with the submitter and published version. Open a response to inspect its original field labels and values.
 4. Sign in with a second assigned Portal account. It must see only its own history. Trying another user's submission detail API URL must return 404. Studio managers can see both users' responses.
-5. Edit fields/name and publish a new version. Existing history must keep the old title, labels and values. A Portal page already open before republishing submits against the version it displayed; refreshing loads the newest version.
+5. Edit fields/name and publish a new version. Existing history must keep the old title, labels and values. A Portal page already open before republishing is rejected with "This form has been updated. Reload the page to submit the latest version." Refreshing loads the newest version. Retrying a response that was already saved against the old version still returns it.
 6. Switch organizations and retry form/history URLs: submissions, history and details from another organization must be unavailable. Removing a Portal membership must also prevent access on the next request.
 7. During a submission the button and inputs are disabled. Repeating the same request ID with the same response returns the original submission, without adding another row or audit event. Changed values with an already saved request ID are rejected.
 8. Optional File fields can be left empty. Required File fields must contain a valid file. The server rejects missing required files and fabricated references to existing attachments.
 
-History is paginated at 25 rows. Submissions are immutable, store the publication ID and are validated against that snapshot on the server. Audits record submission metadata, not answer values. No workflow execution or approval is started in this slice.
+History is paginated at 25 rows. New submissions must target the latest published version (409 `form_version_outdated` otherwise), so rules added in a new version cannot be bypassed from a stale page or a crafted request. Submissions are immutable, store the publication ID and are validated against that snapshot on the server. Audits record submission metadata, not answer values. No workflow execution or approval is started in this slice.
 
 Automated checks cover all value types, invalid values/unknown fields, CSRF, duplicate requests, exact version retention, history privacy and organization boundaries. Internal browser testing remains required before commit.
 

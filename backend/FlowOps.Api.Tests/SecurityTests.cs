@@ -5,6 +5,7 @@ using System.Buffers.Binary;
 using System.Security.Cryptography;
 using FlowOps.Api.Data;
 using FlowOps.Api.Email;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -31,7 +32,8 @@ public sealed class SecurityTests : IAsyncLifetime
         _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Testing");
-            builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?> { ["Storage:RootPath"] = _uploadRoot }));
+            builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
+                { ["Storage:RootPath"] = _uploadRoot, ["RateLimiting:AuthPermitLimit"] = "100" }));
             builder.ConfigureTestServices(services =>
             {
                 services.RemoveAll<DbContextOptions<FlowOpsDbContext>>();
@@ -490,7 +492,11 @@ public sealed class SecurityTests : IAsyncLifetime
         var reordered = await studio.GetFromJsonAsync<JsonElement>($"/api/forms/{formId}");
         Assert.Equal(7, reordered.GetProperty("fields").GetArrayLength());
         Assert.Equal(fields[0].Id, reordered.GetProperty("fields")[0].GetProperty("id").GetGuid());
-        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Updated expense claim", description = "Updated" })).StatusCode);
+        // Metadata edits must name the revision they were made against; stale revisions change nothing.
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "No revision" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Stale edit", draftRevision = 1 })).StatusCode);
+        Assert.Equal("Expense claim", (await studio.GetFromJsonAsync<JsonElement>($"/api/forms/{formId}")).GetProperty("name").GetString());
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Updated expense claim", description = "Updated", draftRevision = 2 })).StatusCode);
         Assert.Equal(HttpStatusCode.Created, (await Mutate(studio, HttpMethod.Post,
             $"/api/organizations/{firstOrganization}/members", new { email = "form-member@example.test", role = "Member" })).StatusCode);
         await Mutate(portal, HttpMethod.Post, $"/api/organizations/{firstOrganization}/activate");
@@ -503,13 +509,22 @@ public sealed class SecurityTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(portal, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 3 })).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await studio.GetAsync("/api/portal/forms")).StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, (await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 2 })).StatusCode);
+        Assert.True((await studio.GetFromJsonAsync<JsonElement>($"/api/forms/{formId}")).GetProperty("hasUnpublishedChanges").GetBoolean());
         Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 3 })).StatusCode);
+        // Republishing an unchanged draft is refused and creates no version, audit event or revision change.
+        Assert.False((await studio.GetFromJsonAsync<JsonElement>($"/api/forms/{formId}")).GetProperty("hasUnpublishedChanges").GetBoolean());
+        var unchanged = await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 4 });
+        Assert.Equal(HttpStatusCode.Conflict, unchanged.StatusCode);
+        Assert.Equal("no_changes", (await unchanged.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+        Assert.Equal(4, (await studio.GetFromJsonAsync<JsonElement>($"/api/forms/{formId}")).GetProperty("draftRevision").GetInt32());
         var published = await portal.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}");
         var publicationId = published.GetProperty("id").GetGuid();
         Assert.Equal(1, published.GetProperty("versionNumber").GetInt32());
         Assert.Equal(7, published.GetProperty("fields").GetArrayLength());
         Assert.Single((await portal.GetFromJsonAsync<JsonElement>("/api/portal/forms")).EnumerateArray());
-        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields", new { fields = new[] { fields[0] }, draftRevision = 4 })).StatusCode);
+        var edited = await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields", new { fields = new[] { fields[0] }, draftRevision = 4 });
+        Assert.Equal(HttpStatusCode.OK, edited.StatusCode);
+        Assert.True((await edited.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("hasUnpublishedChanges").GetBoolean());
         Assert.Equal(7, (await portal.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}")).GetProperty("fields").GetArrayLength());
         Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Version two draft", draftRevision = 5 })).StatusCode);
         Assert.Equal("Updated expense claim", (await portal.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}")).GetProperty("name").GetString());
@@ -552,6 +567,7 @@ public sealed class SecurityTests : IAsyncLifetime
         var original = await db.FormPublications.SingleAsync(x => x.Id == publicationId);
         Assert.Equal(7, original.Fields.Count);
         Assert.True(await db.AuditEvents.AnyAsync(x => x.Action == "form.published" && x.SubjectId == publicationId.ToString()));
+        Assert.Equal(2, await db.AuditEvents.CountAsync(x => x.Action == "form.published" && x.OrganizationId == firstOrganization));
         original.Name = "Tampered";
         await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
     }
@@ -653,9 +669,14 @@ public sealed class SecurityTests : IAsyncLifetime
         Assert.Equal("Expense response", detail.GetProperty("form").GetProperty("name").GetString());
         Assert.Equal("Name", detail.GetProperty("form").GetProperty("fields")[0].GetProperty("label").GetString());
         Assert.Equal(12.34m, detail.GetProperty("submission").GetProperty("values").GetProperty(amountId.ToString()).GetDecimal());
-        // A form opened before republishing is still submitted against its exact immutable version.
+        // After republishing, new responses must use the latest version; a retry of an already saved response still succeeds.
+        var stale = await Mutate(alice, HttpMethod.Post, path, new { publicationId, requestId = Guid.NewGuid(), values });
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        Assert.Equal("form_version_outdated", (await stale.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(alice, HttpMethod.Post, path, new { publicationId, requestId = submissionId, values })).StatusCode);
+        var latestId = (await alice.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}")).GetProperty("id").GetGuid();
         Assert.Equal(HttpStatusCode.Created, (await Mutate(alice, HttpMethod.Post, path,
-            new { publicationId, requestId = Guid.NewGuid(), values })).StatusCode);
+            new { publicationId = latestId, requestId = Guid.NewGuid(), values = new Dictionary<Guid, object> { [textId] = "Alice v2" } })).StatusCode);
         Assert.Equal(2, (await alice.GetFromJsonAsync<JsonElement>(path)).GetProperty("total").GetInt32());
         var second = await CreateOrganization(studio, "Other Submission Workspace");
         await Mutate(studio, HttpMethod.Post, $"/api/organizations/{second}/members", new { email = "submission-alice@example.test", role = "Member" });
@@ -751,12 +772,18 @@ public sealed class SecurityTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "one.txt", bytes), (fileField, "two.txt", bytes)])).StatusCode);
         // The first valid file must be removed if a subsequent file fails validation.
         Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "notes.txt", bytes), (optionalFile, "binary.txt", [0, 1, 2])])).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "truncated.txt", [(byte)'a', 0xC3])])).StatusCode);
         Assert.Empty(Directory.Exists(_uploadRoot) ? Directory.GetFiles(_uploadRoot, "*.bin", SearchOption.AllDirectories) : []);
+        Assert.Empty(Directory.Exists(_uploadRoot) ? Directory.GetDirectories(_uploadRoot, "*", SearchOption.AllDirectories)
+            .Where(directory => Path.GetFileName(directory) == submissionId.ToString("N")) : []);
         var savedUpload = await Upload(alice, uploadPath, body, [(fileField, "../../notes.txt", bytes)]);
         Assert.True(savedUpload.StatusCode == HttpStatusCode.Created, await savedUpload.Content.ReadAsStringAsync());
         Assert.Equal(HttpStatusCode.OK, (await Upload(alice, uploadPath, body, [(fileField, "../../notes.txt", bytes)])).StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, (await Upload(alice, uploadPath, body, [(fileField, "different.txt", bytes)])).StatusCode);
-        Assert.Single(Directory.GetFiles(_uploadRoot, "*.bin", SearchOption.AllDirectories));
+        Assert.Equal(HttpStatusCode.Conflict, (await Upload(alice, uploadPath, body, [(fileField, "notes.txt", "Changed notes\n"u8.ToArray())])).StatusCode);
+        // Retries are answered from the saved response without writing files.
+        var savedBin = Assert.Single(Directory.GetFiles(_uploadRoot, "*.bin", SearchOption.AllDirectories));
+        Assert.Single(Directory.GetFiles(Path.GetDirectoryName(savedBin)!));
         var detail = await alice.GetFromJsonAsync<JsonElement>($"{root}/{submissionId}");
         var file = Assert.Single(detail.GetProperty("files").EnumerateArray());
         var fileId = file.GetProperty("id").GetGuid();
@@ -783,7 +810,9 @@ public sealed class SecurityTests : IAsyncLifetime
             ("receipt.png", Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP1kAAAAASUVORK5CYII=")),
             ("receipt.jpg", new byte[] { 255, 216, 255, 224, 0, 16 }),
             ("receipt.jpeg", new byte[] { 255, 216, 255, 224, 0, 16 }),
-            ("notes.csv", "name,value\nAlice,1"u8.ToArray()) })
+            ("notes.csv", "name,value\nAlice,1"u8.ToArray()),
+            // A two-byte UTF-8 character straddling the 80 KB streaming buffer boundary is still valid text.
+            ("split.txt", Enumerable.Repeat((byte)'a', 81919).Concat("é\n"u8.ToArray()).ToArray()) })
             Assert.Equal(HttpStatusCode.Created, (await Upload(alice, uploadPath, new { publicationId, requestId = Guid.NewGuid(), values }, [(fileField, fixture.Item1, fixture.Item2)])).StatusCode);
         var thirdFile = Guid.NewGuid();
         var largeFields = new[] { fields[0], fields[1] with { MaxFileSizeMb = 10 }, fields[2] with { MaxFileSizeMb = 10 },
@@ -814,9 +843,9 @@ public sealed class SecurityTests : IAsyncLifetime
         var aliceId = (await FlowOps.Api.Auth.AuthEndpoints.FindAccount(scope.ServiceProvider.GetRequiredService<UserManager<FlowUser>>(), "file-alice@example.test", "Portal"))!.Id;
         Assert.Equal(HttpStatusCode.NoContent, (await Mutate(studio, HttpMethod.Delete, $"/api/organizations/{organization}/members/{aliceId}")).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await alice.GetAsync(downloadPath)).StatusCode);
-        Assert.Equal(7, await db.FormSubmissions.CountAsync());
-        Assert.Equal(8, await db.FormAttachments.CountAsync());
-        Assert.Equal(8, await db.AuditEvents.CountAsync(x => x.Action == "form.file_uploaded"));
+        Assert.Equal(8, await db.FormSubmissions.CountAsync());
+        Assert.Equal(9, await db.FormAttachments.CountAsync());
+        Assert.Equal(9, await db.AuditEvents.CountAsync(x => x.Action == "form.file_uploaded"));
         var attachment = await db.FormAttachments.SingleAsync(x => x.Id == fileId);
         attachment.FileName = "tampered.txt";
         await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
@@ -956,6 +985,82 @@ public sealed class SecurityTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK,
             (await Mutate(client, HttpMethod.Post, "/api/auth/login",
                 new { email = "reset@example.test", password = "AnotherSecure123!", surface = "Studio" })).StatusCode);
+    }
+
+    [Fact]
+    public async Task Password_reset_clears_lockout_caused_by_wrong_passwords()
+    {
+        using var client = NewClient();
+        const string email = "reset-lockout@example.test";
+        await RegisterAndLogin(client, email, "Portal");
+        await Mutate(client, HttpMethod.Post, "/api/auth/logout");
+        for (var attempt = 1; attempt <= 5; attempt++)
+            await Mutate(client, HttpMethod.Post, "/api/auth/login", new { email, password = "WrongPassword123!", surface = "Portal" });
+        Assert.Equal((HttpStatusCode)423, (await Mutate(client, HttpMethod.Post, "/api/auth/login",
+            new { email, password = "SecurePass123!", surface = "Portal" })).StatusCode);
+        await Mutate(client, HttpMethod.Post, "/api/auth/password/reset-request", new { email, surface = "Portal" });
+        var mail = (TestEmailDelivery)_factory.Services.GetRequiredService<IEmailDelivery>();
+        var token = QueryHelpers.ParseQuery(new Uri(mail.Messages.Last(x => x.Address == email).Body.Split('\n')[1]).Query)["token"].ToString();
+        Assert.Equal(HttpStatusCode.NoContent, (await Mutate(client, HttpMethod.Post, "/api/auth/password/reset",
+            new { email, token, newPassword = "AnotherSecure123!", surface = "Portal" })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(client, HttpMethod.Post, "/api/auth/login",
+            new { email, password = "AnotherSecure123!", surface = "Portal" })).StatusCode);
+    }
+
+    [Fact]
+    public async Task Unconfirmed_accounts_count_wrong_passwords_toward_lockout()
+    {
+        using var client = NewClient();
+        const string email = "unconfirmed-guess@example.test";
+        client.DefaultRequestHeaders.Add("X-FlowOps-Surface", "Portal");
+        Assert.Equal(HttpStatusCode.Created, (await Mutate(client, HttpMethod.Post, "/api/auth/register",
+            new { email, password = "SecurePass123!", displayName = "Unconfirmed", surface = "Portal" })).StatusCode);
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            var response = await Mutate(client, HttpMethod.Post, "/api/auth/login", new { email, password = "WrongPassword123!", surface = "Portal" });
+            Assert.Equal(attempt == 5 ? (HttpStatusCode)423 : HttpStatusCode.Unauthorized, response.StatusCode);
+        }
+        // Once locked, the correct password no longer reveals itself through the "confirm your email" response.
+        Assert.Equal((HttpStatusCode)423, (await Mutate(client, HttpMethod.Post, "/api/auth/login",
+            new { email, password = "SecurePass123!", surface = "Portal" })).StatusCode);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Auth_rate_limit_partitions_by_forwarded_client_only_when_enabled(bool enabled)
+    {
+        await using var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
+                { ["ForwardedHeaders:Enabled"] = enabled.ToString(), ["RateLimiting:AuthPermitLimit"] = "2" }));
+            builder.ConfigureTestServices(services => services.AddSingleton<IStartupFilter>(new LoopbackPeer()));
+        });
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost"), HandleCookies = true });
+        async Task<HttpStatusCode> Login(string clientIp)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/api/auth/login")
+                { Content = JsonContent.Create(new { email = "nobody@example.test", password = "WrongPassword123!", surface = "Portal" }) };
+            var csrf = await client.GetFromJsonAsync<JsonElement>("/api/auth/csrf");
+            request.Headers.Add("X-CSRF-TOKEN", csrf.GetProperty("requestToken").GetString());
+            request.Headers.Add("X-Forwarded-For", clientIp);
+            return (await client.SendAsync(request)).StatusCode;
+        }
+        Assert.Equal(HttpStatusCode.Unauthorized, await Login("203.0.113.1"));
+        Assert.Equal(HttpStatusCode.Unauthorized, await Login("203.0.113.1"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, await Login("203.0.113.1"));
+        // Enabled: another client behind the trusted proxy has its own bucket. Disabled: the header is ignored.
+        Assert.Equal(enabled ? HttpStatusCode.Unauthorized : HttpStatusCode.TooManyRequests, await Login("203.0.113.2"));
+    }
+
+    // Test requests have no peer address; present them as coming from a co-located (loopback) proxy.
+    private sealed class LoopbackPeer : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
+        {
+            app.Use((context, nextMiddleware) => { context.Connection.RemoteIpAddress = IPAddress.Loopback; return nextMiddleware(context); });
+            next(app);
+        };
     }
 }
 

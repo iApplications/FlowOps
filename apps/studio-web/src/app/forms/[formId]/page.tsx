@@ -12,8 +12,7 @@ export default async function DesignerPage({ params }: { params: Promise<{ formI
   let account: Response;
   let response: Response;
   try {
-    account = await fetch(`${apiUrl}/api/auth/me`, options);
-    response = await fetch(`${apiUrl}/api/forms/${encodeURIComponent(formId)}`, options);
+    [account, response] = await Promise.all([fetch(`${apiUrl}/api/auth/me`, options), fetch(`${apiUrl}/api/forms/${encodeURIComponent(formId)}`, options)]);
   } catch { return <SurfaceShell title="Designer unavailable" description="Start the FlowOps API and try again." />; }
   if (account.status === 401 || response.status === 401) redirect("/login");
   if (!account.ok) return <SurfaceShell title="Designer unavailable" description="The API could not load your account." />;

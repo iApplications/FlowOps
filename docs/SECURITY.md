@@ -313,6 +313,15 @@ Different endpoint groups should use different rate-limit policies. At minimum d
 
 Rate limiting should protect both security-sensitive endpoints and server resources. Limits may be keyed by account, credential, organization, IP address, or a combination depending on the endpoint.
 
+**Current implementation and deployment requirement.** The authentication endpoints (register, confirm, resend, login, password reset) share an `auth` policy: a fixed window of `RateLimiting:AuthPermitLimit` requests per minute (default 10) per client IP. Account lockout (5 failures, 15 minutes) limits password guessing per account, including unconfirmed accounts.
+
+Browsers reach the API through the Next.js proxy. The API therefore sees the proxy's address unless forwarded headers are enabled, and then every user shares one bucket. Next.js forwards a client-supplied `X-Forwarded-For` unchanged, so the API must not trust that header when Next.js is exposed directly. In production:
+
+1. Put an edge reverse proxy or load balancer in front of Studio/Portal that sets `X-Forwarded-For` to the real client address, appending to or overwriting any value the client sent.
+2. Set `ForwardedHeaders__Enabled=true` on the API. Loopback peers are trusted by default; add the Next.js servers' addresses to `ForwardedHeaders:KnownProxies` when they run on other hosts.
+
+Only the last `X-Forwarded-For` hop is used (`ForwardLimit = 1`). This must be verified in the target deployment before go-live.
+
 ### 12.5 Input Validation, Request Limits, and Errors
 
 Treat all API input as untrusted. Validate:

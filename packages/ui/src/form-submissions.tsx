@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { PublishedForm, SubmissionDetail, SubmissionHistoryPage, SubmissionValues, SubmissionFile } from "@flowops/types";
-import { apiRequest, apiDownload } from "@flowops/api-client";
+import { apiRequest, apiDownload, ApiError } from "@flowops/api-client";
 import { FormRenderer } from "./form-renderer";
 
 export function PortalForm({ form }: { form: PublishedForm }) {
@@ -19,6 +19,9 @@ export function PortalForm({ form }: { form: PublishedForm }) {
       await apiRequest(`/api/portal/forms/${form.formId}/submissions${withFiles ? "/with-files" : ""}`, { method: "POST", signal: AbortSignal.timeout(90000), body: withFiles ? body : request });
     } catch (error) {
       if (error instanceof Error && error.name === "TimeoutError") throw new Error("Submission timed out. Retry with the same values, or refresh history to check whether it was saved.");
+      // The server answered, so this request ID is settled: rejected requests saved nothing, and a 409 means it
+      // was already used. Only timeouts and network failures keep the ID so a retry cannot create a duplicate.
+      if (error instanceof ApiError) requestId.current = null;
       throw error;
     }
     requestId.current = null; setRefresh(value => value + 1);

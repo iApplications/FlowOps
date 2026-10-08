@@ -10,6 +10,7 @@ public sealed record FormField(Guid Id, string Type, string Label, bool Required
 public static class FormFieldValidation
 {
     public static readonly string[] Types = ["Text", "Textarea", "Number", "Currency", "Date", "Dropdown", "Checkbox", "File"];
+    public static readonly IReadOnlySet<string> AllowedFileExtensions = new HashSet<string> { ".pdf", ".png", ".jpg", ".jpeg", ".txt", ".csv" };
     public static string? Validate(List<FormField>? fields)
     {
         if (fields is null || fields.Count > 50) return "A form can have at most 50 fields.";
@@ -41,7 +42,7 @@ public static class FormFieldValidation
             {
                 if (field.MaxFileSizeMb is null or < 1 or > 10) return "File size must be between 1 and 10 MB.";
                 if (field.AcceptedExtensions is null || field.AcceptedExtensions.Count is < 1 or > 10
-                    || field.AcceptedExtensions.Any(x => x is not (".pdf" or ".png" or ".jpg" or ".jpeg" or ".txt" or ".csv")))
+                    || field.AcceptedExtensions.Any(x => !AllowedFileExtensions.Contains(x)))
                     return "Choose allowed file types: PDF, PNG, JPG, JPEG, TXT or CSV.";
             }
             else if (field.MaxFileSizeMb is not null || field.AcceptedExtensions is not null) return "File limits apply only to File fields.";

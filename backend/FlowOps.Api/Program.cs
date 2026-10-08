@@ -1,3 +1,4 @@
+using System.Net;
 using System.Security.Claims;
 using System.Threading.RateLimiting;
 using FlowOps.Api.Auth;
@@ -8,6 +9,7 @@ using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -66,7 +68,9 @@ builder.Services.Configure<DataProtectionTokenProviderOptions>(options =>
     options.TokenLifespan = TimeSpan.FromHours(1));
 builder.Services.Configure<SecurityStampValidatorOptions>(options =>
 {
-    options.ValidationInterval = TimeSpan.Zero;
+    // Revocation, expiry and disabled users are enforced per request by the BrowserSession check below,
+    // so the stamp only needs periodic revalidation.
+    options.ValidationInterval = TimeSpan.FromMinutes(1);
     options.OnRefreshingPrincipal = context =>
     {
         var sessionClaim = context.CurrentPrincipal?.FindFirst(AuthEndpoints.SessionClaim);
@@ -105,6 +109,17 @@ builder.Services.AddAntiforgery(options =>
     options.Cookie.SecurePolicy = builder.Environment.IsDevelopment()
         ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always;
 });
+// Browsers reach the API through the Next.js proxy, so without forwarded headers every client shares the
+// proxy's IP and its rate-limit bucket. Next.js passes a client-supplied X-Forwarded-For through unchanged,
+// so only enable this when an edge reverse proxy in front of Next.js sets the header. See docs/SECURITY.md.
+builder.Services.AddOptions<ForwardedHeadersOptions>().Configure<IConfiguration>((options, configuration) =>
+{
+    if (!configuration.GetValue("ForwardedHeaders:Enabled", false)) { options.ForwardedHeaders = ForwardedHeaders.None; return; }
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor;
+    options.ForwardLimit = 1;
+    foreach (var proxy in configuration.GetSection("ForwardedHeaders:KnownProxies").Get<string[]>() ?? [])
+        options.KnownProxies.Add(IPAddress.Parse(proxy));
+});
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -112,13 +127,14 @@ builder.Services.AddRateLimiter(options =>
         context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions
         {
-            PermitLimit = builder.Environment.IsEnvironment("Testing") ? 100 : 10,
+            PermitLimit = context.RequestServices.GetRequiredService<IConfiguration>().GetValue("RateLimiting:AuthPermitLimit", 10),
             Window = TimeSpan.FromMinutes(1),
             QueueLimit = 0
         }));
 });
 
 var app = builder.Build();
+app.UseForwardedHeaders();
 app.UseExceptionHandler();
 if (!app.Environment.IsDevelopment()) app.UseHsts();
 if (app.Environment.IsDevelopment())

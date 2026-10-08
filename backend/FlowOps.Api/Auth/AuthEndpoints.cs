@@ -67,6 +67,9 @@ public static class AuthEndpoints
             return Results.BadRequest(new { error = "An account with this email already exists on this site." });
         var username = surface + "." + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(users.NormalizeEmail(email))));
         var user = new FlowUser { UserName = username, Email = email, DisplayName = name, AccountSurface = surface };
+        // The account, its Studio signup claim and the audit event commit together; a partial account could
+        // neither sign in to Studio nor register again.
+        await using var transaction = await db.Database.BeginTransactionAsync();
         var result = await users.CreateAsync(user, request.Password);
         if (!result.Succeeded) return IdentityErrors(result);
 
@@ -78,6 +81,7 @@ public static class AuthEndpoints
 
         AuditService.Append(db, "account.register", user.Id, user.Id);
         await db.SaveChangesAsync();
+        await transaction.CommitAsync();
         await SendConfirmation(user, users, config, emailDelivery, loggerFactory, request.Surface);
         return Results.Created("/api/auth/login", new { message = "Account created. Check your email to confirm it." });
     }
@@ -146,9 +150,24 @@ public static class AuthEndpoints
         if (passwordResult.IsLockedOut) return Results.Problem(statusCode: 423, title: "Account temporarily locked");
         if (!passwordResult.Succeeded)
         {
-            if (passwordResult.IsNotAllowed && !user.EmailConfirmed
-                && await users.CheckPasswordAsync(user, request.Password))
-                return Results.Problem(statusCode: 403, title: "Confirm your email before signing in. Use Resend confirmation if needed.");
+            // Identity reports NotAllowed for unconfirmed accounts before checking the password or counting
+            // failures, so apply lockout here; otherwise guesses would be unlimited.
+            if (passwordResult.IsNotAllowed && !user.EmailConfirmed)
+            {
+                if (await users.IsLockedOutAsync(user)) return Results.Problem(statusCode: 423, title: "Account temporarily locked");
+                if (await users.CheckPasswordAsync(user, request.Password))
+                {
+                    await users.ResetAccessFailedCountAsync(user);
+                    return Results.Problem(statusCode: 403, title: "Confirm your email before signing in. Use Resend confirmation if needed.");
+                }
+                await users.AccessFailedAsync(user);
+                if (await users.IsLockedOutAsync(user))
+                {
+                    AuditService.Append(db, "auth.login_failed", user.Id, user.Id);
+                    await db.SaveChangesAsync();
+                    return Results.Problem(statusCode: 423, title: "Account temporarily locked");
+                }
+            }
             AuditService.Append(db, "auth.login_failed", user.Id, user.Id);
             await db.SaveChangesAsync();
             return Results.Json(new { error = "Email or password is incorrect." }, statusCode: 401);
@@ -324,6 +343,9 @@ public static class AuthEndpoints
                 return Results.BadRequest(new { error = "This reset link is invalid, expired, or already used. Request a new link from Forgot password." });
             return IdentityErrors(result);
         }
+        // Proving control of the mailbox ends any lockout an attacker caused with wrong passwords.
+        await users.SetLockoutEndDateAsync(user, null);
+        await users.ResetAccessFailedCountAsync(user);
         await RevokeSessions(db, user.Id, "auth.password_reset");
         return Results.NoContent();
     }

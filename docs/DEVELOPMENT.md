@@ -4,7 +4,7 @@ Phase 1 runs Studio, Portal, and the API on localhost. PostgreSQL can run locall
 
 Studio and Portal have independent accounts. The same email can register once on each site with separate passwords, confirmation/reset tokens, MFA keys, memberships and browser sessions. Authentication requests specify `surface`; browser API requests and server page checks send `X-FlowOps-Surface` to select the site's session cookie. The selector never grants account permissions.
 
-Studio signup can confirm email, sign in to setup, create a workspace as Owner and enable MFA. Full Studio management requires Owner/Admin membership and the workspace MFA policy. Portal signup cannot create organizations or access Studio. Studio adds confirmed Portal accounts with the Member role and confirmed Studio accounts with the Admin role. Converting between those roles requires adding the separate account; roles cannot change an account's site.
+Studio signup can confirm email, sign in to setup, create a workspace as Owner and enable MFA. Full Studio management requires Owner/Admin membership and the workspace MFA policy. Portal signup cannot create organizations or access Studio. Studio adds confirmed Portal accounts with the Member role and confirmed Studio accounts with the Admin role. Converting between those roles requires adding the separate account; roles cannot change an account's site. For the same reason, `PUT /api/organizations/{id}/members/{userId}` cannot currently move anyone between Member and Admin; it is kept for future roles within one site.
 
 The SeparateStudioPortalAccounts migration preserves legacy Studio signup markers and existing Owner/Admin accounts as Studio accounts; remaining accounts become Portal accounts. It revokes existing sessions, so sign in again after migration. For an account previously used on both sites, register a separate account on the other site and assign its memberships in Studio.
 
@@ -14,7 +14,7 @@ The SeparateStudioPortalAccounts migration preserves legacy Studio signup marker
 
 Development uploads are stored outside the repository at `%LOCALAPPDATA%\FlowOps\Uploads`. Override with `Storage:RootPath` in an environment appsettings file, or set `Storage__RootPath` to an absolute path before starting the API. Outside Development the default is `App_Data/Uploads` under the API content root, ignored by Git. Storage must stay outside `wwwroot`.
 
-Apply the `FormSubmissions` and `FormAttachments` migrations before testing submissions with files. Files are uploaded with the form response, with one per File field, a configured 1–10 MB limit per field and a 20 MB total. Restart Portal after changing its proxy configuration. Both Studio and Portal download through authenticated API requests.
+Apply the `FormSubmissions` and `FormAttachments` migrations before testing submissions with files. Files are uploaded with the form response, with one per File field, a configured 1–10 MB limit per field and a 20 MB total. Restart Portal after changing its proxy configuration. Also restart it after a branch switch or pull that touches `next.config.ts`: the dev server's automatic restart can drop the experimental `proxyClientMaxBodySize` setting. Uploads over 10 MB then fail through the proxy with "socket hang up" while the API logs nothing. A clean start prints `proxyClientMaxBodySize: "21mb"` under Experiments. Both Studio and Portal download through authenticated API requests.
 
 Back up the configured storage folder together with PostgreSQL. The database stores attachment ownership, filename, size and content hash; file bytes live on disk. Validation checks basic signatures/UTF-8 encoding and does not include malware scanning. See [Progress](PROGRESS.md) and [Phase 2 tests](PHASE2.md).
 
@@ -98,7 +98,7 @@ In Visual Studio, use **Tools → NuGet Package Manager → Package Manager Cons
 
 ## Start the API
 
-In Visual Studio 2026, open `FlowOps.slnx`, select `FlowOps.Api` as the startup project, and press F5. If Visual Studio was already open when the .NET SDK was installed, restart Visual Studio so it picks up the user `PATH` and `DOTNET_ROOT` settings.
+In Visual Studio 2026, open `FlowOps.slnx`, select `FlowOps.Api` as the startup project, and press F5. The `FlowOps.Api` launch profile listens on `http://localhost:5050`, matching the web apps' default `FLOWOPS_API_URL`. The `FlowOps.Api HTTPS` profile listens on `https://localhost:5443` for the local HTTPS setup below. If Visual Studio was already open when the .NET SDK was installed, restart Visual Studio so it picks up the user `PATH` and `DOTNET_ROOT` settings.
 
 Keep only one API process running. Stop debugging in Visual Studio or press Ctrl+C in the terminal that started the API before rebuilding if Windows reports that `FlowOps.Api.exe` is locked.
 
