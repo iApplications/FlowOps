@@ -69,6 +69,10 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
     public DbSet<OrganizationMember> OrganizationMembers => Set<OrganizationMember>();
     public DbSet<BrowserSession> BrowserSessions => Set<BrowserSession>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
+    public DbSet<FlowOps.Api.Forms.FormDefinition> Forms => Set<FlowOps.Api.Forms.FormDefinition>();
+    public DbSet<FlowOps.Api.Forms.FormPublication> FormPublications => Set<FlowOps.Api.Forms.FormPublication>();
+    public DbSet<FlowOps.Api.Forms.FormSubmission> FormSubmissions => Set<FlowOps.Api.Forms.FormSubmission>();
+    public DbSet<FlowOps.Api.Forms.FormAttachment> FormAttachments => Set<FlowOps.Api.Forms.FormAttachment>();
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
@@ -82,8 +86,26 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
         return base.SaveChanges();
     }
 
+    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        EnsureAuditAppendOnly();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        EnsureAuditAppendOnly();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
     private void EnsureAuditAppendOnly()
     {
+        if (ChangeTracker.Entries<FlowOps.Api.Forms.FormAttachment>().Any(x => x.State is EntityState.Modified or EntityState.Deleted))
+            throw new InvalidOperationException("Submitted attachments are immutable.");
+        if (ChangeTracker.Entries<FlowOps.Api.Forms.FormSubmission>().Any(x => x.State is EntityState.Modified or EntityState.Deleted))
+            throw new InvalidOperationException("Form submissions are immutable.");
+        if (ChangeTracker.Entries<FlowOps.Api.Forms.FormPublication>().Any(x => x.State is EntityState.Modified or EntityState.Deleted))
+            throw new InvalidOperationException("Published forms are immutable.");
         if (ChangeTracker.Entries<AuditEvent>().Any(x => x.State is EntityState.Modified or EntityState.Deleted))
             throw new InvalidOperationException("Audit events are append-only.");
     }
@@ -91,6 +113,41 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
+        builder.Entity<FlowOps.Api.Forms.FormAttachment>(entity =>
+        {
+            entity.Property(x => x.FileName).HasMaxLength(180);
+            entity.Property(x => x.Sha256).HasMaxLength(64);
+            entity.HasIndex(x => new { x.SubmissionId, x.FieldId }).IsUnique();
+            entity.HasOne<FlowOps.Api.Forms.FormSubmission>().WithMany().HasForeignKey(x => x.SubmissionId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Restrict);
+        });
+        builder.Entity<FlowOps.Api.Forms.FormSubmission>(entity =>
+        {
+            entity.Property(x => x.Id).ValueGeneratedNever();
+            entity.Property(x => x.RequestFingerprint).HasMaxLength(64);
+            entity.HasIndex(x => new { x.OrganizationId, x.FormId, x.UserId });
+            entity.HasOne<FlowOps.Api.Forms.FormPublication>().WithMany().HasForeignKey(x => x.PublicationId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<FlowOps.Api.Forms.FormDefinition>().WithMany().HasForeignKey(x => x.FormId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<FlowUser>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
+        });
+        builder.Entity<FlowOps.Api.Forms.FormPublication>(entity =>
+        {
+            entity.Property(x => x.Name).HasMaxLength(120);
+            entity.Property(x => x.Description).HasMaxLength(2000);
+            entity.HasIndex(x => new { x.FormId, x.VersionNumber }).IsUnique();
+            entity.HasIndex(x => x.OrganizationId);
+            entity.HasOne<FlowOps.Api.Forms.FormDefinition>().WithMany().HasForeignKey(x => x.FormId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Restrict);
+        });
+        builder.Entity<FlowOps.Api.Forms.FormDefinition>(entity =>
+        {
+            entity.Property(x => x.Name).HasMaxLength(120);
+            entity.Property(x => x.Description).HasMaxLength(2000);
+            entity.Property(x => x.DraftRevision).IsConcurrencyToken();
+            entity.HasIndex(x => new { x.OrganizationId, x.Name });
+            entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Restrict);
+        });
         builder.Entity<FlowUser>().Property(x => x.DisplayName).HasMaxLength(120);
         builder.Entity<FlowUser>().Property(x => x.AccountSurface).HasMaxLength(16);
         builder.Entity<FlowUser>().HasIndex(x => new { x.AccountSurface, x.NormalizedEmail }).IsUnique();

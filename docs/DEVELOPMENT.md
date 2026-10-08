@@ -1,14 +1,24 @@
 # Local Development
 
-Phase 1 runs Studio, Portal, and the API on localhost. PostgreSQL can run locally on Windows or in Docker Compose. Mailpit is available through Compose for email testing. Workflow execution belongs to later phases.
+Studio, Portal, and the API run on localhost. They currently provide Phase 1 accounts and organizations and the Phase 2 Form Builder: drafts, designer, publishing, submissions and file uploads. PostgreSQL can run locally on Windows or in Docker Compose. Mailpit is available through Compose for email testing. Workflow execution belongs to later phases.
 
 Studio and Portal have independent accounts. The same email can register once on each site with separate passwords, confirmation/reset tokens, MFA keys, memberships and browser sessions. Authentication requests specify `surface`; browser API requests and server page checks send `X-FlowOps-Surface` to select the site's session cookie. The selector never grants account permissions.
 
-Studio signup can confirm email, sign in to setup, create a workspace as Owner and enable MFA. Full Studio management requires Owner/Admin membership and the workspace MFA policy. Portal signup cannot create organizations or access Studio. Studio adds confirmed Portal accounts with the Member role and confirmed Studio accounts with the Admin role. Converting between those roles requires adding the separate account; roles cannot change an account's site.
+Studio signup can confirm email, sign in to setup, create a workspace as Owner and enable MFA. Full Studio management requires Owner/Admin membership and the workspace MFA policy. Portal signup cannot create organizations or access Studio. Studio adds confirmed Portal accounts with the Member role and confirmed Studio accounts with the Admin role. Converting between those roles requires adding the separate account; roles cannot change an account's site. For the same reason, `PUT /api/organizations/{id}/members/{userId}` cannot currently move anyone between Member and Admin; it is kept for future roles within one site.
 
 The SeparateStudioPortalAccounts migration preserves legacy Studio signup markers and existing Owner/Admin accounts as Studio accounts; remaining accounts become Portal accounts. It revokes existing sessions, so sign in again after migration. For an account previously used on both sites, register a separate account on the other site and assign its memberships in Studio.
 
 ## Prerequisites
+
+### Form attachment storage
+
+Development uploads are stored outside the repository at `%LOCALAPPDATA%\FlowOps\Uploads`. Override with `Storage:RootPath` in an environment appsettings file, or set `Storage__RootPath` to an absolute path before starting the API. Outside Development the default is `App_Data/Uploads` under the API content root, ignored by Git. Storage must stay outside `wwwroot`.
+
+Apply the `FormSubmissions` and `FormAttachments` migrations before testing submissions with files. Files are uploaded with the form response, with one per File field, a configured 1–10 MB limit per field and a 20 MB total. Restart Portal after changing its proxy configuration. Also restart it after a branch switch or pull that touches `next.config.ts`: the dev server's automatic restart can drop the experimental `proxyClientMaxBodySize` setting. Uploads over 10 MB then fail through the proxy with "socket hang up" while the API logs nothing. A clean start prints `proxyClientMaxBodySize: "21mb"` under Experiments. Both Studio and Portal download through authenticated API requests.
+
+Back up the configured storage folder together with PostgreSQL. The database stores attachment ownership, filename, size and content hash; file bytes live on disk. Validation checks basic signatures/UTF-8 encoding and does not include malware scanning. See [Progress](PROGRESS.md) and [Phase 2 tests](PHASE2.md).
+
+### Required tools
 
 - Node.js 20.9 or newer and npm
 - .NET 10 SDK
@@ -88,7 +98,7 @@ In Visual Studio, use **Tools → NuGet Package Manager → Package Manager Cons
 
 ## Start the API
 
-In Visual Studio 2026, open `FlowOps.slnx`, select `FlowOps.Api` as the startup project, and press F5. If Visual Studio was already open when the .NET SDK was installed, restart Visual Studio so it picks up the user `PATH` and `DOTNET_ROOT` settings.
+In Visual Studio 2026, open `FlowOps.slnx`, select `FlowOps.Api` as the startup project, and press F5. The `FlowOps.Api` launch profile listens on `http://localhost:5050`, matching the web apps' default `FLOWOPS_API_URL`. The `FlowOps.Api HTTPS` profile listens on `https://localhost:5443` for the local HTTPS setup below. If Visual Studio was already open when the .NET SDK was installed, restart Visual Studio so it picks up the user `PATH` and `DOTNET_ROOT` settings.
 
 Keep only one API process running. Stop debugging in Visual Studio or press Ctrl+C in the terminal that started the API before rebuilding if Windows reports that `FlowOps.Api.exe` is locked.
 
@@ -143,13 +153,13 @@ Local HTTPS transport checks passed for both login pages, API health, and both w
 
 Local HTTPS validates development TLS and cookie behavior. Deployment certificate chains, TLS termination, trusted forwarding headers, and production HSTS still require verification in the intended deployment environment.
 
-### Phase 1 branch workflow
+### Branch workflow
 
-`dev/Phase1_Authentication` is the Phase 1 integration branch. Create each Phase 1 work branch from it and target pull requests back to it, rather than `main`. The current verification branch is `feat/phase1-security-verification`.
+Each phase has an integration branch: `dev/Phase1_Authentication` (merged into `main`) and `dev/Phase2_Form` (implementation complete; final acceptance pending). Create each work branch from the current phase's integration branch and target pull requests back to it, rather than `main`. Phase-specific delivery and test checklists live in documents such as [Phase 2](PHASE2.md); status is tracked in [Progress](PROGRESS.md).
 
-Keep code changes uncommitted until internal testing passes and commit approval is given. Merge the integration branch to `main` only after all core Phase 1 deliverables and acceptance checks are complete.
+Keep code changes uncommitted until internal testing passes and commit approval is given. Merge an integration branch to `main` only after all core deliverables and acceptance checks of that phase are complete.
 
-Phase 1 completion checks:
+Phase 1 completion checks (completed and merged):
 
 - Automated authentication, account separation, MFA, tenant isolation and permission tests pass.
 - Automated checks confirm session expiry, five-attempt lockout expiry for both account types, and Admin/Owner removal boundaries.
@@ -166,4 +176,4 @@ dotnet test FlowOps.slnx -c Release
 docker compose config
 ```
 
-The automated API tests use an in-memory SQLite database for authentication, CSRF, separate Studio/Portal accounts and sessions, MFA, password-reset, and cross-organization checks. The latest local run passed 16 tests. PostgreSQL migrations have been applied locally, and the Studio/Portal browser flows have undergone internal testing. Docker checks remain separate from the local Windows PostgreSQL setup. Complete internal testing before committing Phase 1.
+The automated API tests use an in-memory SQLite database for authentication, CSRF, separate Studio/Portal accounts and sessions, MFA, password reset, forms, submissions, attachments and cross-organization checks. Attachment tests use an isolated temporary storage folder. See [Progress](PROGRESS.md) for current verification and acceptance status. PostgreSQL migrations have been applied locally; internal browser checks are required before committing each work slice. Docker checks remain separate from the local Windows PostgreSQL setup.

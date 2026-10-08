@@ -5,6 +5,7 @@ using System.Buffers.Binary;
 using System.Security.Cryptography;
 using FlowOps.Api.Data;
 using FlowOps.Api.Email;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -13,6 +14,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.WebUtilities;
 
@@ -22,6 +24,7 @@ public sealed class SecurityTests : IAsyncLifetime
 {
     private readonly SqliteConnection _connection = new("Data Source=:memory:");
     private WebApplicationFactory<Program> _factory = null!;
+    private readonly string _uploadRoot = Path.Combine(Path.GetTempPath(), "FlowOps-upload-tests-" + Guid.NewGuid().ToString("N"));
 
     public async Task InitializeAsync()
     {
@@ -29,6 +32,8 @@ public sealed class SecurityTests : IAsyncLifetime
         _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Testing");
+            builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
+                { ["Storage:RootPath"] = _uploadRoot, ["RateLimiting:AuthPermitLimit"] = "100" }));
             builder.ConfigureTestServices(services =>
             {
                 services.RemoveAll<DbContextOptions<FlowOpsDbContext>>();
@@ -46,6 +51,8 @@ public sealed class SecurityTests : IAsyncLifetime
     {
         await _factory.DisposeAsync();
         await _connection.DisposeAsync();
+        if (Directory.Exists(_uploadRoot) && Path.GetDirectoryName(Path.GetFullPath(_uploadRoot)) == Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar)
+            && Path.GetFileName(_uploadRoot).StartsWith("FlowOps-upload-tests-", StringComparison.Ordinal)) Directory.Delete(_uploadRoot, true);
     }
 
     private HttpClient NewClient() => _factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -437,6 +444,414 @@ public sealed class SecurityTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Draft_forms_require_studio_mfa_and_stay_in_the_active_organization()
+    {
+        using var studio = NewClient();
+        using var portal = NewClient();
+        await RegisterAndLogin(studio, "form-owner@example.test");
+        await RegisterAndLogin(portal, "form-member@example.test", "Portal");
+        var firstOrganization = await CreateOrganization(studio, "First Forms Workspace");
+        Assert.Equal(HttpStatusCode.Forbidden, (await studio.GetAsync("/api/forms")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(studio, HttpMethod.Post, "/api/forms",
+            new { name = "Protected draft" })).StatusCode);
+        var setup = await studio.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Post, "/api/auth/mfa/enable",
+            new { code = AuthenticatorCode(setup.GetProperty("sharedKey").GetString()!) })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Post, "/api/forms", new { name = " " })).StatusCode);
+        var created = await Mutate(studio, HttpMethod.Post, "/api/forms", new { name = "Expense claim", description = "Draft description" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var formId = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var fieldId = Guid.NewGuid();
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Post,
+            $"/api/forms/{formId}/publish", new { draftRevision = 0 })).StatusCode);
+        var fields = new List<FlowOps.Api.Forms.FormField>
+        {
+            new(fieldId, "Text", "Employee name", true, MaxLength: 80),
+            new(Guid.NewGuid(), "Textarea", "Reason", MaxLength: 500),
+            new(Guid.NewGuid(), "Number", "Quantity", Min: 1, Max: 100),
+            new(Guid.NewGuid(), "Currency", "Amount", true, Min: 0, Max: 10000),
+            new(Guid.NewGuid(), "Date", "Expense date", MinDate: "2026-01-01", MaxDate: "2026-12-31"),
+            new(Guid.NewGuid(), "Dropdown", "Category", Options: ["Travel", "Meals"]),
+            new(Guid.NewGuid(), "Checkbox", "I confirm", true),
+            new(Guid.NewGuid(), "File", "Receipt", MaxFileSizeMb: 5, AcceptedExtensions: [".pdf", ".png"])
+        };
+        var fieldSave = await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields", new { fields, draftRevision = 0 });
+        Assert.Equal(HttpStatusCode.OK, fieldSave.StatusCode);
+        var loaded = await studio.GetFromJsonAsync<JsonElement>($"/api/forms/{formId}");
+        Assert.Equal(8, loaded.GetProperty("fields").GetArrayLength());
+        Assert.Equal(fieldId, loaded.GetProperty("fields")[0].GetProperty("id").GetGuid());
+        Assert.Equal(1, loaded.GetProperty("draftRevision").GetInt32());
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(studio, HttpMethod.Put,
+            $"/api/forms/{formId}/fields", new { fields, draftRevision = 0 })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Put,
+            $"/api/forms/{formId}/fields", new { fields = new[] { fields[0], fields[0] }, draftRevision = 1 })).StatusCode);
+        fields.Reverse();
+        fields.RemoveAt(0);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put,
+            $"/api/forms/{formId}/fields", new { fields, draftRevision = 1 })).StatusCode);
+        var reordered = await studio.GetFromJsonAsync<JsonElement>($"/api/forms/{formId}");
+        Assert.Equal(7, reordered.GetProperty("fields").GetArrayLength());
+        Assert.Equal(fields[0].Id, reordered.GetProperty("fields")[0].GetProperty("id").GetGuid());
+        // Metadata edits must name the revision they were made against; stale revisions change nothing.
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "No revision" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Stale edit", draftRevision = 1 })).StatusCode);
+        Assert.Equal("Expense claim", (await studio.GetFromJsonAsync<JsonElement>($"/api/forms/{formId}")).GetProperty("name").GetString());
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Updated expense claim", description = "Updated", draftRevision = 2 })).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await Mutate(studio, HttpMethod.Post,
+            $"/api/organizations/{firstOrganization}/members", new { email = "form-member@example.test", role = "Member" })).StatusCode);
+        await Mutate(portal, HttpMethod.Post, $"/api/organizations/{firstOrganization}/activate");
+        Assert.Equal(HttpStatusCode.Forbidden, (await portal.GetAsync("/api/forms")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(portal, HttpMethod.Put,
+            $"/api/forms/{formId}/fields", new { fields, draftRevision = 1 })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(portal, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Unauthorized edit" })).StatusCode);
+        Assert.Empty((await portal.GetFromJsonAsync<JsonElement>("/api/portal/forms")).EnumerateArray());
+        Assert.Equal(HttpStatusCode.NotFound, (await portal.GetAsync($"/api/portal/forms/{formId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(portal, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 3 })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await studio.GetAsync("/api/portal/forms")).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 2 })).StatusCode);
+        Assert.True((await studio.GetFromJsonAsync<JsonElement>($"/api/forms/{formId}")).GetProperty("hasUnpublishedChanges").GetBoolean());
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 3 })).StatusCode);
+        // Republishing an unchanged draft is refused and creates no version, audit event or revision change.
+        Assert.False((await studio.GetFromJsonAsync<JsonElement>($"/api/forms/{formId}")).GetProperty("hasUnpublishedChanges").GetBoolean());
+        var unchanged = await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 4 });
+        Assert.Equal(HttpStatusCode.Conflict, unchanged.StatusCode);
+        Assert.Equal("no_changes", (await unchanged.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+        Assert.Equal(4, (await studio.GetFromJsonAsync<JsonElement>($"/api/forms/{formId}")).GetProperty("draftRevision").GetInt32());
+        var published = await portal.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}");
+        var publicationId = published.GetProperty("id").GetGuid();
+        Assert.Equal(1, published.GetProperty("versionNumber").GetInt32());
+        Assert.Equal(7, published.GetProperty("fields").GetArrayLength());
+        Assert.Single((await portal.GetFromJsonAsync<JsonElement>("/api/portal/forms")).EnumerateArray());
+        var edited = await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields", new { fields = new[] { fields[0] }, draftRevision = 4 });
+        Assert.Equal(HttpStatusCode.OK, edited.StatusCode);
+        Assert.True((await edited.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("hasUnpublishedChanges").GetBoolean());
+        Assert.Equal(7, (await portal.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}")).GetProperty("fields").GetArrayLength());
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Version two draft", draftRevision = 5 })).StatusCode);
+        Assert.Equal("Updated expense claim", (await portal.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}")).GetProperty("name").GetString());
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 5 })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 6 })).StatusCode);
+        var latest = await portal.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}");
+        Assert.Equal(2, latest.GetProperty("versionNumber").GetInt32());
+        Assert.NotEqual(publicationId, latest.GetProperty("id").GetGuid());
+        Assert.Single(latest.GetProperty("fields").EnumerateArray());
+        Assert.Equal("Version two draft", latest.GetProperty("name").GetString());
+        Assert.Single((await portal.GetFromJsonAsync<JsonElement>("/api/portal/forms")).EnumerateArray());
+        await CreateOrganization(studio, "Second Forms Workspace");
+        var otherOrganization = (await studio.GetFromJsonAsync<JsonElement>("/api/auth/me")).GetProperty("activeOrganization").GetProperty("organizationId").GetGuid();
+        await Mutate(studio, HttpMethod.Post, $"/api/organizations/{otherOrganization}/members", new { email = "form-member@example.test", role = "Member" });
+        await Mutate(portal, HttpMethod.Post, $"/api/organizations/{otherOrganization}/activate");
+        Assert.Empty((await portal.GetFromJsonAsync<JsonElement>("/api/portal/forms")).EnumerateArray());
+        Assert.Equal(HttpStatusCode.NotFound, (await portal.GetAsync($"/api/portal/forms/{formId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 7 })).StatusCode);
+        Assert.Empty((await studio.GetFromJsonAsync<JsonElement>("/api/forms")).EnumerateArray());
+        Assert.Equal(HttpStatusCode.NotFound, (await studio.GetAsync($"/api/forms/{formId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Mutate(studio, HttpMethod.Put,
+            $"/api/forms/{formId}/fields", new { fields, draftRevision = 1 })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "Cross organization edit" })).StatusCode);
+        await Mutate(studio, HttpMethod.Post, $"/api/organizations/{firstOrganization}/activate");
+        var rows = await studio.GetFromJsonAsync<JsonElement>("/api/forms");
+        Assert.Equal("Version two draft", Assert.Single(rows.EnumerateArray()).GetProperty("name").GetString());
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields",
+            new { fields = Array.Empty<FlowOps.Api.Forms.FormField>(), draftRevision = 7 })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish",
+            new { draftRevision = 8 })).StatusCode);
+        await Mutate(portal, HttpMethod.Post, $"/api/organizations/{firstOrganization}/activate");
+        var afterEmptyDraft = await portal.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}");
+        Assert.Equal(2, afterEmptyDraft.GetProperty("versionNumber").GetInt32());
+        Assert.Single(afterEmptyDraft.GetProperty("fields").EnumerateArray());
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        Assert.True(await db.AuditEvents.AnyAsync(x => x.Action == "form.created" && x.OrganizationId == firstOrganization));
+        Assert.True(await db.AuditEvents.AnyAsync(x => x.Action == "form.updated" && x.SubjectId == formId.ToString()));
+        Assert.Equal(2, await db.FormPublications.CountAsync(x => x.FormId == formId));
+        var original = await db.FormPublications.SingleAsync(x => x.Id == publicationId);
+        Assert.Equal(7, original.Fields.Count);
+        Assert.True(await db.AuditEvents.AnyAsync(x => x.Action == "form.published" && x.SubjectId == publicationId.ToString()));
+        Assert.Equal(2, await db.AuditEvents.CountAsync(x => x.Action == "form.published" && x.OrganizationId == firstOrganization));
+        original.Name = "Tampered";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
+    }
+
+    [Fact]
+    public void Field_schema_rejects_invalid_limits_options_and_file_types()
+    {
+        var valid = new FlowOps.Api.Forms.FormField(Guid.NewGuid(), "Text", "Name", MaxLength: 80);
+        string? Validate(FlowOps.Api.Forms.FormField field) => FlowOps.Api.Forms.FormFieldValidation.Validate([field]);
+        Assert.Null(Validate(valid));
+        Assert.NotNull(Validate(valid with { Type = "Script" }));
+        Assert.NotNull(Validate(valid with { Label = " " }));
+        Assert.NotNull(Validate(valid with { MaxLength = 10001 }));
+        Assert.NotNull(Validate(valid with { Type = "Number", MaxLength = null, Min = 10, Max = 1 }));
+        Assert.NotNull(Validate(valid with { Type = "Currency", MaxLength = null, Min = 1.001m }));
+        Assert.NotNull(Validate(valid with { Type = "Date", MaxLength = null, MinDate = "2026-02-30" }));
+        Assert.NotNull(Validate(valid with { Type = "Date", MaxLength = null, MinDate = "2026-12-01", MaxDate = "2026-01-01" }));
+        Assert.NotNull(Validate(valid with { Type = "Dropdown", MaxLength = null, Options = ["Travel", " travel "] }));
+        Assert.NotNull(Validate(valid with { Type = "File", MaxLength = null, MaxFileSizeMb = 11, AcceptedExtensions = [".pdf"] }));
+        Assert.NotNull(Validate(valid with { Type = "File", MaxLength = null, MaxFileSizeMb = 5, AcceptedExtensions = [".exe"] }));
+    }
+
+    private static async Task<HttpResponseMessage> Upload(HttpClient client, string path, object body,
+        (Guid FieldId, string Name, byte[] Bytes)[] files, bool addCsrf = true)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, path);
+        using var multipart = new MultipartFormDataContent();
+        multipart.Add(new StringContent(JsonSerializer.Serialize(body)), "request");
+        foreach (var file in files) multipart.Add(new ByteArrayContent(file.Bytes), file.FieldId.ToString(), file.Name);
+        request.Content = multipart;
+        if (addCsrf)
+        {
+            var csrf = await client.GetFromJsonAsync<JsonElement>("/api/auth/csrf");
+            request.Headers.Add("X-CSRF-TOKEN", csrf.GetProperty("requestToken").GetString());
+        }
+        return await client.SendAsync(request);
+    }
+
+    [Fact]
+    public async Task Submissions_validate_pin_versions_and_enforce_user_and_organization_history()
+    {
+        using var studio = NewClient();
+        using var alice = NewClient();
+        using var bob = NewClient();
+        await RegisterAndLogin(studio, "submission-owner@example.test");
+        await RegisterAndLogin(alice, "submission-alice@example.test", "Portal");
+        await RegisterAndLogin(bob, "submission-bob@example.test", "Portal");
+        var organization = await CreateOrganization(studio, "Submission Workspace");
+        var setup = await studio.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+        await Mutate(studio, HttpMethod.Post, "/api/auth/mfa/enable", new { code = AuthenticatorCode(setup.GetProperty("sharedKey").GetString()!) });
+        foreach (var email in new[] { "submission-alice@example.test", "submission-bob@example.test" })
+            Assert.Equal(HttpStatusCode.Created, (await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/members", new { email, role = "Member" })).StatusCode);
+        await Mutate(alice, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        await Mutate(bob, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        var created = await Mutate(studio, HttpMethod.Post, "/api/forms", new { name = "Expense response", description = "Original description" });
+        var formId = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var textId = Guid.NewGuid();
+        var amountId = Guid.NewGuid();
+        var checkboxId = Guid.NewGuid();
+        var fields = new List<FlowOps.Api.Forms.FormField> {
+            new(textId, "Text", "Name", true, MaxLength: 20),
+            new(amountId, "Currency", "Amount", true, Min: 0, Max: 100),
+            new(checkboxId, "Checkbox", "Confirmed", true)
+        };
+        Assert.Equal(HttpStatusCode.NotFound, (await Mutate(alice, HttpMethod.Post, $"/api/portal/forms/{formId}/submissions",
+            new { publicationId = Guid.NewGuid(), requestId = Guid.NewGuid(), values = new { } })).StatusCode);
+        await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields", new { fields, draftRevision = 0 });
+        await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 1 });
+        var publication = await alice.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}");
+        var publicationId = publication.GetProperty("id").GetGuid();
+        var values = new Dictionary<Guid, object> { [textId] = "Alice", [amountId] = 12.34m, [checkboxId] = true };
+        var submissionId = Guid.NewGuid();
+        var path = $"/api/portal/forms/{formId}/submissions";
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(alice, HttpMethod.Post, path,
+            new { publicationId, requestId = Guid.NewGuid(), values = new Dictionary<Guid, object>() })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(alice, HttpMethod.Post, path,
+            new { publicationId, requestId = Guid.NewGuid(), values = new Dictionary<Guid, object>(values) { [amountId] = 1000 } })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(alice, HttpMethod.Post, path,
+            new { publicationId, requestId = Guid.NewGuid(), values = new Dictionary<Guid, object>(values) { [Guid.NewGuid()] = "Unknown" } })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(alice, HttpMethod.Post, path,
+            new { publicationId, requestId = Guid.NewGuid(), values }, false)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(studio, HttpMethod.Post, path, new { publicationId, requestId = submissionId, values })).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await Mutate(alice, HttpMethod.Post, path,
+            new { publicationId, requestId = submissionId, values })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(alice, HttpMethod.Post, path,
+            new { publicationId, requestId = submissionId, values })).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(alice, HttpMethod.Post, path,
+            new { publicationId, requestId = submissionId, values = new Dictionary<Guid, object>(values) { [textId] = "Changed" } })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await bob.GetAsync($"{path}/{submissionId}")).StatusCode);
+        Assert.Empty((await bob.GetFromJsonAsync<JsonElement>(path)).GetProperty("items").EnumerateArray());
+        Assert.Equal(1, (await alice.GetFromJsonAsync<JsonElement>(path)).GetProperty("total").GetInt32());
+        Assert.Equal(HttpStatusCode.Forbidden, (await alice.GetAsync($"/api/forms/{formId}/submissions")).StatusCode);
+        Assert.Equal(1, (await studio.GetFromJsonAsync<JsonElement>($"/api/forms/{formId}/submissions")).GetProperty("total").GetInt32());
+        Assert.Equal(HttpStatusCode.OK, (await studio.GetAsync($"/api/forms/{formId}/submissions/{submissionId}")).StatusCode);
+        await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "New version", draftRevision = 2 });
+        await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields", new { fields = new[] { fields[0] with { Label = "New label" } }, draftRevision = 3 });
+        await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 4 });
+        var detail = await alice.GetFromJsonAsync<JsonElement>($"{path}/{submissionId}");
+        Assert.Equal("Expense response", detail.GetProperty("form").GetProperty("name").GetString());
+        Assert.Equal("Name", detail.GetProperty("form").GetProperty("fields")[0].GetProperty("label").GetString());
+        Assert.Equal(12.34m, detail.GetProperty("submission").GetProperty("values").GetProperty(amountId.ToString()).GetDecimal());
+        // After republishing, new responses must use the latest version; a retry of an already saved response still succeeds.
+        var stale = await Mutate(alice, HttpMethod.Post, path, new { publicationId, requestId = Guid.NewGuid(), values });
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        Assert.Equal("form_version_outdated", (await stale.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(alice, HttpMethod.Post, path, new { publicationId, requestId = submissionId, values })).StatusCode);
+        var latestId = (await alice.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}")).GetProperty("id").GetGuid();
+        Assert.Equal(HttpStatusCode.Created, (await Mutate(alice, HttpMethod.Post, path,
+            new { publicationId = latestId, requestId = Guid.NewGuid(), values = new Dictionary<Guid, object> { [textId] = "Alice v2" } })).StatusCode);
+        Assert.Equal(2, (await alice.GetFromJsonAsync<JsonElement>(path)).GetProperty("total").GetInt32());
+        var second = await CreateOrganization(studio, "Other Submission Workspace");
+        await Mutate(studio, HttpMethod.Post, $"/api/organizations/{second}/members", new { email = "submission-alice@example.test", role = "Member" });
+        await Mutate(alice, HttpMethod.Post, $"/api/organizations/{second}/activate");
+        Assert.Equal(HttpStatusCode.NotFound, (await alice.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await alice.GetAsync($"{path}/{submissionId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Mutate(alice, HttpMethod.Post, path, new { publicationId, requestId = Guid.NewGuid(), values })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await studio.GetAsync($"/api/forms/{formId}/submissions/{submissionId}")).StatusCode);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        Assert.Equal(2, await db.FormSubmissions.CountAsync());
+        Assert.Equal(2, await db.AuditEvents.CountAsync(x => x.Action == "form.submitted"));
+        var saved = await db.FormSubmissions.SingleAsync(x => x.Id == submissionId);
+        saved.ValuesJson = "{}";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
+    }
+
+    [Fact]
+    public void Submission_values_validate_types_limits_dates_options_checkboxes_and_files()
+    {
+        var id = Guid.NewGuid();
+        var field = new FlowOps.Api.Forms.FormField(id, "Text", "Value", true, MaxLength: 3);
+        bool Invalid(FlowOps.Api.Forms.FormField schema, object? value) => FlowOps.Api.Forms.SubmissionValidation.Validate([schema],
+            new Dictionary<Guid, JsonElement> { [id] = JsonSerializer.SerializeToElement(value) }).Count > 0;
+        Assert.True(Invalid(field, "    "));
+        Assert.True(Invalid(field, "long"));
+        Assert.True(Invalid(field, 2));
+        Assert.False(Invalid(field, "abc"));
+        Assert.False(Invalid(field with { Type = "Textarea" }, "abc"));
+        var numeric = field with { Type = "Number", MaxLength = null, Min = 1, Max = 3 };
+        Assert.True(Invalid(numeric, "2"));
+        Assert.True(Invalid(numeric, 4));
+        Assert.False(Invalid(numeric, 2.5));
+        Assert.True(Invalid(numeric with { Type = "Currency" }, 2.555m));
+        Assert.False(Invalid(numeric with { Type = "Currency" }, 2.55m));
+        var date = field with { Type = "Date", MaxLength = null, MinDate = "2026-01-01", MaxDate = "2026-12-31" };
+        Assert.True(Invalid(date, "2026-02-30"));
+        Assert.True(Invalid(date, "2025-12-31"));
+        Assert.False(Invalid(date, "2026-04-01"));
+        Assert.True(Invalid(field with { Type = "Dropdown", Options = ["Yes", "No"] }, "Other"));
+        Assert.False(Invalid(field with { Type = "Dropdown", Options = ["Yes", "No"] }, "Yes"));
+        Assert.True(Invalid(field with { Type = "Checkbox" }, false));
+        Assert.True(Invalid(field with { Type = "Checkbox" }, "true"));
+        Assert.False(Invalid(field with { Type = "Checkbox" }, true));
+        Assert.True(Invalid(field with { Type = "File" }, null));
+        Assert.True(Invalid(field with { Type = "File", Required = false }, "fake-file-id"));
+        Assert.False(Invalid(field with { Type = "File", Required = false }, null));
+    }
+
+    [Fact]
+    public async Task Attachments_validate_store_once_cleanup_rejections_and_protect_downloads()
+    {
+        using var studio = NewClient();
+        using var alice = NewClient();
+        using var bob = NewClient();
+        await RegisterAndLogin(studio, "file-owner@example.test");
+        await RegisterAndLogin(alice, "file-alice@example.test", "Portal");
+        await RegisterAndLogin(bob, "file-bob@example.test", "Portal");
+        var organization = await CreateOrganization(studio, "File Workspace");
+        var setup = await studio.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+        await Mutate(studio, HttpMethod.Post, "/api/auth/mfa/enable", new { code = AuthenticatorCode(setup.GetProperty("sharedKey").GetString()!) });
+        foreach (var email in new[] { "file-alice@example.test", "file-bob@example.test" })
+            await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/members", new { email, role = "Member" });
+        await Mutate(alice, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        await Mutate(bob, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        var created = await Mutate(studio, HttpMethod.Post, "/api/forms", new { name = "File response" });
+        var formId = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var fileField = Guid.NewGuid();
+        var optionalFile = Guid.NewGuid();
+        var nameField = Guid.NewGuid();
+        var fields = new List<FlowOps.Api.Forms.FormField> {
+            new(nameField, "Text", "Name", true),
+            new(fileField, "File", "Receipt", true, MaxFileSizeMb: 1, AcceptedExtensions: [".pdf", ".png", ".jpg", ".jpeg", ".txt", ".csv"]),
+            new(optionalFile, "File", "Notes", false, MaxFileSizeMb: 1, AcceptedExtensions: [".txt"])
+        };
+        await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields", new { fields, draftRevision = 0 });
+        await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 1 });
+        var publicationId = (await alice.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}")).GetProperty("id").GetGuid();
+        var submissionId = Guid.NewGuid();
+        var values = new Dictionary<Guid, object> { [nameField] = "Alice" };
+        var body = new { publicationId, requestId = submissionId, values };
+        var root = $"/api/portal/forms/{formId}/submissions";
+        var uploadPath = root + "/with-files";
+        var bytes = System.Text.Encoding.UTF8.GetBytes("Uploaded notes\n");
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [])).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "notes.txt", bytes)], false)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Upload(studio, uploadPath, body, [(fileField, "notes.txt", bytes)])).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "script.exe", bytes)])).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "fake.pdf", bytes)])).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "empty.txt", [])])).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "big.txt", new byte[1024 * 1024 + 1])])).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(nameField, "notes.txt", bytes)])).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "one.txt", bytes), (fileField, "two.txt", bytes)])).StatusCode);
+        // The first valid file must be removed if a subsequent file fails validation.
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "notes.txt", bytes), (optionalFile, "binary.txt", [0, 1, 2])])).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "truncated.txt", [(byte)'a', 0xC3])])).StatusCode);
+        Assert.Empty(Directory.Exists(_uploadRoot) ? Directory.GetFiles(_uploadRoot, "*.bin", SearchOption.AllDirectories) : []);
+        Assert.Empty(Directory.Exists(_uploadRoot) ? Directory.GetDirectories(_uploadRoot, "*", SearchOption.AllDirectories)
+            .Where(directory => Path.GetFileName(directory) == submissionId.ToString("N")) : []);
+        var savedUpload = await Upload(alice, uploadPath, body, [(fileField, "../../notes.txt", bytes)]);
+        Assert.True(savedUpload.StatusCode == HttpStatusCode.Created, await savedUpload.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.OK, (await Upload(alice, uploadPath, body, [(fileField, "../../notes.txt", bytes)])).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Upload(alice, uploadPath, body, [(fileField, "different.txt", bytes)])).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Upload(alice, uploadPath, body, [(fileField, "notes.txt", "Changed notes\n"u8.ToArray())])).StatusCode);
+        // Retries are answered from the saved response without writing files.
+        var savedBin = Assert.Single(Directory.GetFiles(_uploadRoot, "*.bin", SearchOption.AllDirectories));
+        Assert.Single(Directory.GetFiles(Path.GetDirectoryName(savedBin)!));
+        var detail = await alice.GetFromJsonAsync<JsonElement>($"{root}/{submissionId}");
+        var file = Assert.Single(detail.GetProperty("files").EnumerateArray());
+        var fileId = file.GetProperty("id").GetGuid();
+        Assert.Equal("notes.txt", file.GetProperty("fileName").GetString());
+        Assert.Equal(bytes.Length, file.GetProperty("size").GetInt64());
+        Assert.False(file.TryGetProperty("sha256", out _));
+        Assert.False(detail.GetProperty("submission").TryGetProperty("requestFingerprint", out _));
+        var downloadPath = $"{root}/{submissionId}/files/{fileId}";
+        var download = await alice.GetAsync(downloadPath);
+        Assert.Equal(HttpStatusCode.OK, download.StatusCode);
+        Assert.Equal(bytes, await download.Content.ReadAsByteArrayAsync());
+        Assert.Equal("attachment", download.Content.Headers.ContentDisposition!.DispositionType);
+        Assert.Equal("nosniff", Assert.Single(download.Headers.GetValues("X-Content-Type-Options")));
+        Assert.Equal(HttpStatusCode.NotFound, (await bob.GetAsync(downloadPath)).StatusCode);
+        using var anonymous = NewClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(downloadPath)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await studio.GetAsync($"/api/forms/{formId}/submissions/{submissionId}/files/{fileId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await alice.GetAsync($"{root}/{Guid.NewGuid()}/files/{fileId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(alice, HttpMethod.Post, root,
+            new { publicationId, requestId = Guid.NewGuid(), values = new Dictionary<Guid, object>(values) { [fileField] = fileId } })).StatusCode);
+        // Each allowed extension has a valid fixture, and the original remains downloadable after republishing.
+        foreach (var fixture in new[] {
+            ("receipt.pdf", "%PDF-1.4\n%%EOF"u8.ToArray()),
+            ("receipt.png", Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP1kAAAAASUVORK5CYII=")),
+            ("receipt.jpg", new byte[] { 255, 216, 255, 224, 0, 16 }),
+            ("receipt.jpeg", new byte[] { 255, 216, 255, 224, 0, 16 }),
+            ("notes.csv", "name,value\nAlice,1"u8.ToArray()),
+            // A two-byte UTF-8 character straddling the 80 KB streaming buffer boundary is still valid text.
+            ("split.txt", Enumerable.Repeat((byte)'a', 81919).Concat("é\n"u8.ToArray()).ToArray()) })
+            Assert.Equal(HttpStatusCode.Created, (await Upload(alice, uploadPath, new { publicationId, requestId = Guid.NewGuid(), values }, [(fileField, fixture.Item1, fixture.Item2)])).StatusCode);
+        var thirdFile = Guid.NewGuid();
+        var largeFields = new[] { fields[0], fields[1] with { MaxFileSizeMb = 10 }, fields[2] with { MaxFileSizeMb = 10 },
+            new FlowOps.Api.Forms.FormField(thirdFile, "File", "Extra", MaxFileSizeMb: 1, AcceptedExtensions: [".txt"]) };
+        await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields", new { fields = largeFields, draftRevision = 2 });
+        await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 3 });
+        var largePublication = (await alice.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}")).GetProperty("id").GetGuid();
+        var sixMb = Enumerable.Repeat((byte)'a', 6 * 1024 * 1024).ToArray();
+        var tenMb = Enumerable.Repeat((byte)'a', 10 * 1024 * 1024).ToArray();
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath,
+            new { publicationId = largePublication, requestId = Guid.NewGuid(), values },
+            [(fileField, "one.txt", tenMb), (optionalFile, "two.txt", tenMb), (thirdFile, "three.txt", [(byte)'a'])])).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await Upload(alice, uploadPath,
+            new { publicationId = largePublication, requestId = Guid.NewGuid(), values },
+            [(fileField, "one.txt", sixMb), (optionalFile, "two.txt", sixMb)])).StatusCode);
+        await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields", new { fields = new[] { fields[0] }, draftRevision = 4 });
+        await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 5 });
+        Assert.Equal(HttpStatusCode.OK, (await alice.GetAsync(downloadPath)).StatusCode);
+        var otherOrg = await CreateOrganization(studio, "Other File Workspace");
+        await Mutate(studio, HttpMethod.Post, $"/api/organizations/{otherOrg}/members", new { email = "file-alice@example.test", role = "Member" });
+        await Mutate(alice, HttpMethod.Post, $"/api/organizations/{otherOrg}/activate");
+        Assert.Equal(HttpStatusCode.NotFound, (await alice.GetAsync(downloadPath)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await studio.GetAsync($"/api/forms/{formId}/submissions/{submissionId}/files/{fileId}")).StatusCode);
+        await Mutate(alice, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        var aliceId = (await FlowOps.Api.Auth.AuthEndpoints.FindAccount(scope.ServiceProvider.GetRequiredService<UserManager<FlowUser>>(), "file-alice@example.test", "Portal"))!.Id;
+        Assert.Equal(HttpStatusCode.NoContent, (await Mutate(studio, HttpMethod.Delete, $"/api/organizations/{organization}/members/{aliceId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await alice.GetAsync(downloadPath)).StatusCode);
+        Assert.Equal(8, await db.FormSubmissions.CountAsync());
+        Assert.Equal(9, await db.FormAttachments.CountAsync());
+        Assert.Equal(9, await db.AuditEvents.CountAsync(x => x.Action == "form.file_uploaded"));
+        var attachment = await db.FormAttachments.SingleAsync(x => x.Id == fileId);
+        attachment.FileName = "tampered.txt";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
+    }
+
+    [Fact]
     public async Task Https_sessions_use_secure_http_only_cookies_for_each_surface()
     {
         foreach (var surface in new[] { "Studio", "Portal" })
@@ -570,6 +985,82 @@ public sealed class SecurityTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK,
             (await Mutate(client, HttpMethod.Post, "/api/auth/login",
                 new { email = "reset@example.test", password = "AnotherSecure123!", surface = "Studio" })).StatusCode);
+    }
+
+    [Fact]
+    public async Task Password_reset_clears_lockout_caused_by_wrong_passwords()
+    {
+        using var client = NewClient();
+        const string email = "reset-lockout@example.test";
+        await RegisterAndLogin(client, email, "Portal");
+        await Mutate(client, HttpMethod.Post, "/api/auth/logout");
+        for (var attempt = 1; attempt <= 5; attempt++)
+            await Mutate(client, HttpMethod.Post, "/api/auth/login", new { email, password = "WrongPassword123!", surface = "Portal" });
+        Assert.Equal((HttpStatusCode)423, (await Mutate(client, HttpMethod.Post, "/api/auth/login",
+            new { email, password = "SecurePass123!", surface = "Portal" })).StatusCode);
+        await Mutate(client, HttpMethod.Post, "/api/auth/password/reset-request", new { email, surface = "Portal" });
+        var mail = (TestEmailDelivery)_factory.Services.GetRequiredService<IEmailDelivery>();
+        var token = QueryHelpers.ParseQuery(new Uri(mail.Messages.Last(x => x.Address == email).Body.Split('\n')[1]).Query)["token"].ToString();
+        Assert.Equal(HttpStatusCode.NoContent, (await Mutate(client, HttpMethod.Post, "/api/auth/password/reset",
+            new { email, token, newPassword = "AnotherSecure123!", surface = "Portal" })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(client, HttpMethod.Post, "/api/auth/login",
+            new { email, password = "AnotherSecure123!", surface = "Portal" })).StatusCode);
+    }
+
+    [Fact]
+    public async Task Unconfirmed_accounts_count_wrong_passwords_toward_lockout()
+    {
+        using var client = NewClient();
+        const string email = "unconfirmed-guess@example.test";
+        client.DefaultRequestHeaders.Add("X-FlowOps-Surface", "Portal");
+        Assert.Equal(HttpStatusCode.Created, (await Mutate(client, HttpMethod.Post, "/api/auth/register",
+            new { email, password = "SecurePass123!", displayName = "Unconfirmed", surface = "Portal" })).StatusCode);
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            var response = await Mutate(client, HttpMethod.Post, "/api/auth/login", new { email, password = "WrongPassword123!", surface = "Portal" });
+            Assert.Equal(attempt == 5 ? (HttpStatusCode)423 : HttpStatusCode.Unauthorized, response.StatusCode);
+        }
+        // Once locked, the correct password no longer reveals itself through the "confirm your email" response.
+        Assert.Equal((HttpStatusCode)423, (await Mutate(client, HttpMethod.Post, "/api/auth/login",
+            new { email, password = "SecurePass123!", surface = "Portal" })).StatusCode);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Auth_rate_limit_partitions_by_forwarded_client_only_when_enabled(bool enabled)
+    {
+        await using var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
+                { ["ForwardedHeaders:Enabled"] = enabled.ToString(), ["RateLimiting:AuthPermitLimit"] = "2" }));
+            builder.ConfigureTestServices(services => services.AddSingleton<IStartupFilter>(new LoopbackPeer()));
+        });
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost"), HandleCookies = true });
+        async Task<HttpStatusCode> Login(string clientIp)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/api/auth/login")
+                { Content = JsonContent.Create(new { email = "nobody@example.test", password = "WrongPassword123!", surface = "Portal" }) };
+            var csrf = await client.GetFromJsonAsync<JsonElement>("/api/auth/csrf");
+            request.Headers.Add("X-CSRF-TOKEN", csrf.GetProperty("requestToken").GetString());
+            request.Headers.Add("X-Forwarded-For", clientIp);
+            return (await client.SendAsync(request)).StatusCode;
+        }
+        Assert.Equal(HttpStatusCode.Unauthorized, await Login("203.0.113.1"));
+        Assert.Equal(HttpStatusCode.Unauthorized, await Login("203.0.113.1"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, await Login("203.0.113.1"));
+        // Enabled: another client behind the trusted proxy has its own bucket. Disabled: the header is ignored.
+        Assert.Equal(enabled ? HttpStatusCode.Unauthorized : HttpStatusCode.TooManyRequests, await Login("203.0.113.2"));
+    }
+
+    // Test requests have no peer address; present them as coming from a co-located (loopback) proxy.
+    private sealed class LoopbackPeer : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
+        {
+            app.Use((context, nextMiddleware) => { context.Connection.RemoteIpAddress = IPAddress.Loopback; return nextMiddleware(context); });
+            next(app);
+        };
     }
 }
 

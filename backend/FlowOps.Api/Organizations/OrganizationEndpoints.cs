@@ -72,7 +72,7 @@ public static class OrganizationEndpoints
     private static async Task<IResult> Members(Guid organizationId, HttpContext context,
         FlowOpsDbContext db)
     {
-        if (!await IsManager(db, context, organizationId)) return Results.Forbid();
+        if (await ManagerRole(db, context, organizationId) is null) return Results.Forbid();
         var members = await db.OrganizationMembers.Where(x => x.OrganizationId == organizationId)
             .OrderBy(x => x.User.DisplayName)
             .Select(x => new { x.UserId, x.User.Email, x.User.DisplayName, x.Role, x.JoinedAt })
@@ -110,6 +110,9 @@ public static class OrganizationEndpoints
             new { user.Id, user.Email, Role = request.Role });
     }
 
+    // Roles are tied to account surfaces (Admin = Studio account, Member = Portal account) and an account never
+    // changes surface, so with today's two assignable roles this endpoint cannot move anyone between them; to make
+    // a Member an Admin, add that person's Studio account. It is kept for future roles within one surface.
     private static async Task<IResult> ChangeRole(Guid organizationId, string userId,
         ChangeRoleRequest request, HttpContext context, FlowOpsDbContext db)
     {
@@ -152,18 +155,15 @@ public static class OrganizationEndpoints
         return Results.NoContent();
     }
 
-    private static async Task<bool> IsManager(FlowOpsDbContext db, HttpContext context, Guid? organizationId)
-        => await ManagerRole(db, context, organizationId) is not null;
-
-    private static async Task<string?> ManagerRole(FlowOpsDbContext db, HttpContext context, Guid? organizationId)
+    // The MembersManage policy (OrganizationPermissionHandler) has already verified that the route organization is
+    // the active one, the caller is Owner/Admin there, and MFA policy is satisfied. This only reads the role for
+    // the Owner-versus-Admin rules; null means the membership disappeared since authorization.
+    private static Task<string?> ManagerRole(FlowOpsDbContext db, HttpContext context, Guid organizationId)
     {
         var session = AuthEndpoints.CurrentSession(context)!;
-        if (organizationId is null || session.ActiveOrganizationId != organizationId) return null;
-        var membership = await db.OrganizationMembers
-            .Where(x => x.OrganizationId == organizationId && x.UserId == session.UserId)
-            .Select(x => new { x.Role, x.Organization.RequireMfaForPrivileged }).FirstOrDefaultAsync();
-        if (membership is null || !OrganizationRoles.IsPrivileged(membership.Role)) return null;
-        return membership.RequireMfaForPrivileged && !session.MfaSatisfied ? null : membership.Role;
+        return db.OrganizationMembers.Where(x => x.OrganizationId == organizationId && x.UserId == session.UserId
+                && (x.Role == OrganizationRoles.Owner || x.Role == OrganizationRoles.Admin))
+            .Select(x => (string?)x.Role).FirstOrDefaultAsync();
     }
 }
 

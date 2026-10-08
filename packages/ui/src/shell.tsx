@@ -34,10 +34,11 @@ export function AuthFrame({ surface, title, intro, children }: {
   </main>;
 }
 
-export function DashboardShell({ surface, user, children }: {
+export function DashboardShell({ surface, user, children, section = "overview" }: {
   surface: "Studio" | "Portal";
   user: CurrentUser;
   children: ReactNode;
+  section?: "overview" | "forms";
 }) {
   const active = user.activeOrganization;
   const name = user.displayName.trim().split(/\s+/)[0] || "there";
@@ -48,13 +49,14 @@ export function DashboardShell({ surface, user, children }: {
         <div>
           <p className="studio-sidebar-label">Workspace</p>
           <nav className="studio-nav" aria-label="Studio sections">
-            <a href="#overview"><span className="studio-nav-dot" />Overview</a>
-            <a href="#organizations"><span className="studio-nav-dot" />Organizations</a>
-            <a href="#members"><span className="studio-nav-dot" />People</a>
-            <a href="#security"><span className="studio-nav-dot" />Security</a>
+            <a href="/" aria-current={section === "overview" ? "page" : undefined}><span className="studio-nav-dot" />Overview</a>
+            <a href="/forms" aria-current={section === "forms" ? "page" : undefined}><span className="studio-nav-dot" />Forms</a>
+            <a href="/#organizations"><span className="studio-nav-dot" />Organizations</a>
+            <a href="/#members"><span className="studio-nav-dot" />People</a>
+            <a href="/#security"><span className="studio-nav-dot" />Security</a>
           </nav>
         </div>
-        <div className="studio-sidebar-foot">FlowOps Studio<br />Builder tools arrive in the next phases.</div>
+        <div className="studio-sidebar-foot">FlowOps Studio<br />Design and publish forms for your organization.</div>
       </aside>
       <div className="studio-main" id="overview">
         <header className="studio-topbar">
@@ -63,16 +65,16 @@ export function DashboardShell({ surface, user, children }: {
         </header>
         <main className="studio-content">
           <div className="dashboard-heading">
-            <div><p className="eyebrow">Organization foundation</p><h1>Workspace overview</h1><p>Manage access, people, and account security from one place.</p></div>
-            <span className="status-chip">Phase 1 · Identity & organizations</span>
+            <div><p className="eyebrow">{section === "forms" ? "Form builder" : "Organization foundation"}</p><h1>{section === "forms" ? "Forms" : "Workspace overview"}</h1><p>{section === "forms" ? "Manage draft forms for your active organization." : "Manage access, people, and account security from one place."}</p></div>
+            <span className="status-chip">Phase 2 · Form foundation</span>
           </div>
-          <section className="studio-hero">
+          {section === "overview" && <section className="studio-hero">
             <div><p className="eyebrow">{active ? "Current workspace" : "Get started"}</p>
               <h2>{active ? active.name : "Create your first organization"}</h2>
               <p>{active ? `Your role is ${active.role}. Set up the people and security for this workspace before building workflows.` : "An organization keeps your people, settings, and future workflows together."}</p>
             </div>
             <div className="studio-hero-icon" aria-hidden="true">◎</div>
-          </section>
+          </section>}
           {children}
         </main>
       </div>
@@ -82,14 +84,15 @@ export function DashboardShell({ surface, user, children }: {
   return <div className="portal-layout">
     <header className="portal-header">
       <BrandMark label="FlowOps Portal" />
+      <nav className="designer-actions" aria-label="Portal sections"><a className="btn" href="/" aria-current={section === "overview" ? "page" : undefined}>Overview</a><a className="btn" href="/forms" aria-current={section === "forms" ? "page" : undefined}>Forms</a></nav>
       <span className="portal-header-note">Your space for requests and approvals</span>
     </header>
     <main className="portal-content">
-      <div className="portal-heading"><div><p className="eyebrow">Your workspace</p><h1>Good to see you, {name}.</h1><p>Keep your account and organization ready for what comes next.</p></div></div>
+      <div className="portal-heading"><div><p className="eyebrow">Your workspace</p><h1>{section === "forms" ? "Forms" : `Good to see you, ${name}.`}</h1><p>{section === "forms" ? "View published forms from your active organization." : "Manage your account, security and assigned organizations."}</p></div></div>
       <section className="portal-hero">
         <div><p className="eyebrow">{active ? "You are in" : "Your next step"}</p>
           <h2>{active ? active.name : "Join your organization"}</h2>
-          <p>{active ? `You have ${active.role.toLowerCase()} access here. Forms, requests, and tasks will appear as those modules are added.` : "Ask your organization administrator to add your confirmed email address through Studio."}</p>
+          <p>{active ? `You have ${active.role.toLowerCase()} access here. Open Forms to view what your organization has published.` : "Ask your organization administrator to add your confirmed email address through Studio."}</p>
         </div>
         <div className="portal-hero-art" aria-hidden="true"><span /></div>
       </section>
