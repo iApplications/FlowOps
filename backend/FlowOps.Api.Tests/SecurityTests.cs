@@ -13,6 +13,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.WebUtilities;
 
@@ -22,6 +23,7 @@ public sealed class SecurityTests : IAsyncLifetime
 {
     private readonly SqliteConnection _connection = new("Data Source=:memory:");
     private WebApplicationFactory<Program> _factory = null!;
+    private readonly string _uploadRoot = Path.Combine(Path.GetTempPath(), "FlowOps-upload-tests-" + Guid.NewGuid().ToString("N"));
 
     public async Task InitializeAsync()
     {
@@ -29,6 +31,7 @@ public sealed class SecurityTests : IAsyncLifetime
         _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Testing");
+            builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?> { ["Storage:RootPath"] = _uploadRoot }));
             builder.ConfigureTestServices(services =>
             {
                 services.RemoveAll<DbContextOptions<FlowOpsDbContext>>();
@@ -46,6 +49,8 @@ public sealed class SecurityTests : IAsyncLifetime
     {
         await _factory.DisposeAsync();
         await _connection.DisposeAsync();
+        if (Directory.Exists(_uploadRoot) && Path.GetDirectoryName(Path.GetFullPath(_uploadRoot)) == Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar)
+            && Path.GetFileName(_uploadRoot).StartsWith("FlowOps-upload-tests-", StringComparison.Ordinal)) Directory.Delete(_uploadRoot, true);
     }
 
     private HttpClient NewClient() => _factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -567,6 +572,254 @@ public sealed class SecurityTests : IAsyncLifetime
         Assert.NotNull(Validate(valid with { Type = "Dropdown", MaxLength = null, Options = ["Travel", " travel "] }));
         Assert.NotNull(Validate(valid with { Type = "File", MaxLength = null, MaxFileSizeMb = 11, AcceptedExtensions = [".pdf"] }));
         Assert.NotNull(Validate(valid with { Type = "File", MaxLength = null, MaxFileSizeMb = 5, AcceptedExtensions = [".exe"] }));
+    }
+
+    private static async Task<HttpResponseMessage> Upload(HttpClient client, string path, object body,
+        (Guid FieldId, string Name, byte[] Bytes)[] files, bool addCsrf = true)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, path);
+        using var multipart = new MultipartFormDataContent();
+        multipart.Add(new StringContent(JsonSerializer.Serialize(body)), "request");
+        foreach (var file in files) multipart.Add(new ByteArrayContent(file.Bytes), file.FieldId.ToString(), file.Name);
+        request.Content = multipart;
+        if (addCsrf)
+        {
+            var csrf = await client.GetFromJsonAsync<JsonElement>("/api/auth/csrf");
+            request.Headers.Add("X-CSRF-TOKEN", csrf.GetProperty("requestToken").GetString());
+        }
+        return await client.SendAsync(request);
+    }
+
+    [Fact]
+    public async Task Submissions_validate_pin_versions_and_enforce_user_and_organization_history()
+    {
+        using var studio = NewClient();
+        using var alice = NewClient();
+        using var bob = NewClient();
+        await RegisterAndLogin(studio, "submission-owner@example.test");
+        await RegisterAndLogin(alice, "submission-alice@example.test", "Portal");
+        await RegisterAndLogin(bob, "submission-bob@example.test", "Portal");
+        var organization = await CreateOrganization(studio, "Submission Workspace");
+        var setup = await studio.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+        await Mutate(studio, HttpMethod.Post, "/api/auth/mfa/enable", new { code = AuthenticatorCode(setup.GetProperty("sharedKey").GetString()!) });
+        foreach (var email in new[] { "submission-alice@example.test", "submission-bob@example.test" })
+            Assert.Equal(HttpStatusCode.Created, (await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/members", new { email, role = "Member" })).StatusCode);
+        await Mutate(alice, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        await Mutate(bob, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        var created = await Mutate(studio, HttpMethod.Post, "/api/forms", new { name = "Expense response", description = "Original description" });
+        var formId = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var textId = Guid.NewGuid();
+        var amountId = Guid.NewGuid();
+        var checkboxId = Guid.NewGuid();
+        var fields = new List<FlowOps.Api.Forms.FormField> {
+            new(textId, "Text", "Name", true, MaxLength: 20),
+            new(amountId, "Currency", "Amount", true, Min: 0, Max: 100),
+            new(checkboxId, "Checkbox", "Confirmed", true)
+        };
+        Assert.Equal(HttpStatusCode.NotFound, (await Mutate(alice, HttpMethod.Post, $"/api/portal/forms/{formId}/submissions",
+            new { publicationId = Guid.NewGuid(), requestId = Guid.NewGuid(), values = new { } })).StatusCode);
+        await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields", new { fields, draftRevision = 0 });
+        await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 1 });
+        var publication = await alice.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}");
+        var publicationId = publication.GetProperty("id").GetGuid();
+        var values = new Dictionary<Guid, object> { [textId] = "Alice", [amountId] = 12.34m, [checkboxId] = true };
+        var submissionId = Guid.NewGuid();
+        var path = $"/api/portal/forms/{formId}/submissions";
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(alice, HttpMethod.Post, path,
+            new { publicationId, requestId = Guid.NewGuid(), values = new Dictionary<Guid, object>() })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(alice, HttpMethod.Post, path,
+            new { publicationId, requestId = Guid.NewGuid(), values = new Dictionary<Guid, object>(values) { [amountId] = 1000 } })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(alice, HttpMethod.Post, path,
+            new { publicationId, requestId = Guid.NewGuid(), values = new Dictionary<Guid, object>(values) { [Guid.NewGuid()] = "Unknown" } })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(alice, HttpMethod.Post, path,
+            new { publicationId, requestId = Guid.NewGuid(), values }, false)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(studio, HttpMethod.Post, path, new { publicationId, requestId = submissionId, values })).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await Mutate(alice, HttpMethod.Post, path,
+            new { publicationId, requestId = submissionId, values })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(alice, HttpMethod.Post, path,
+            new { publicationId, requestId = submissionId, values })).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(alice, HttpMethod.Post, path,
+            new { publicationId, requestId = submissionId, values = new Dictionary<Guid, object>(values) { [textId] = "Changed" } })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await bob.GetAsync($"{path}/{submissionId}")).StatusCode);
+        Assert.Empty((await bob.GetFromJsonAsync<JsonElement>(path)).GetProperty("items").EnumerateArray());
+        Assert.Equal(1, (await alice.GetFromJsonAsync<JsonElement>(path)).GetProperty("total").GetInt32());
+        Assert.Equal(HttpStatusCode.Forbidden, (await alice.GetAsync($"/api/forms/{formId}/submissions")).StatusCode);
+        Assert.Equal(1, (await studio.GetFromJsonAsync<JsonElement>($"/api/forms/{formId}/submissions")).GetProperty("total").GetInt32());
+        Assert.Equal(HttpStatusCode.OK, (await studio.GetAsync($"/api/forms/{formId}/submissions/{submissionId}")).StatusCode);
+        await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}", new { name = "New version", draftRevision = 2 });
+        await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields", new { fields = new[] { fields[0] with { Label = "New label" } }, draftRevision = 3 });
+        await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 4 });
+        var detail = await alice.GetFromJsonAsync<JsonElement>($"{path}/{submissionId}");
+        Assert.Equal("Expense response", detail.GetProperty("form").GetProperty("name").GetString());
+        Assert.Equal("Name", detail.GetProperty("form").GetProperty("fields")[0].GetProperty("label").GetString());
+        Assert.Equal(12.34m, detail.GetProperty("submission").GetProperty("values").GetProperty(amountId.ToString()).GetDecimal());
+        // A form opened before republishing is still submitted against its exact immutable version.
+        Assert.Equal(HttpStatusCode.Created, (await Mutate(alice, HttpMethod.Post, path,
+            new { publicationId, requestId = Guid.NewGuid(), values })).StatusCode);
+        Assert.Equal(2, (await alice.GetFromJsonAsync<JsonElement>(path)).GetProperty("total").GetInt32());
+        var second = await CreateOrganization(studio, "Other Submission Workspace");
+        await Mutate(studio, HttpMethod.Post, $"/api/organizations/{second}/members", new { email = "submission-alice@example.test", role = "Member" });
+        await Mutate(alice, HttpMethod.Post, $"/api/organizations/{second}/activate");
+        Assert.Equal(HttpStatusCode.NotFound, (await alice.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await alice.GetAsync($"{path}/{submissionId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Mutate(alice, HttpMethod.Post, path, new { publicationId, requestId = Guid.NewGuid(), values })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await studio.GetAsync($"/api/forms/{formId}/submissions/{submissionId}")).StatusCode);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        Assert.Equal(2, await db.FormSubmissions.CountAsync());
+        Assert.Equal(2, await db.AuditEvents.CountAsync(x => x.Action == "form.submitted"));
+        var saved = await db.FormSubmissions.SingleAsync(x => x.Id == submissionId);
+        saved.ValuesJson = "{}";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
+    }
+
+    [Fact]
+    public void Submission_values_validate_types_limits_dates_options_checkboxes_and_files()
+    {
+        var id = Guid.NewGuid();
+        var field = new FlowOps.Api.Forms.FormField(id, "Text", "Value", true, MaxLength: 3);
+        bool Invalid(FlowOps.Api.Forms.FormField schema, object? value) => FlowOps.Api.Forms.SubmissionValidation.Validate([schema],
+            new Dictionary<Guid, JsonElement> { [id] = JsonSerializer.SerializeToElement(value) }).Count > 0;
+        Assert.True(Invalid(field, "    "));
+        Assert.True(Invalid(field, "long"));
+        Assert.True(Invalid(field, 2));
+        Assert.False(Invalid(field, "abc"));
+        Assert.False(Invalid(field with { Type = "Textarea" }, "abc"));
+        var numeric = field with { Type = "Number", MaxLength = null, Min = 1, Max = 3 };
+        Assert.True(Invalid(numeric, "2"));
+        Assert.True(Invalid(numeric, 4));
+        Assert.False(Invalid(numeric, 2.5));
+        Assert.True(Invalid(numeric with { Type = "Currency" }, 2.555m));
+        Assert.False(Invalid(numeric with { Type = "Currency" }, 2.55m));
+        var date = field with { Type = "Date", MaxLength = null, MinDate = "2026-01-01", MaxDate = "2026-12-31" };
+        Assert.True(Invalid(date, "2026-02-30"));
+        Assert.True(Invalid(date, "2025-12-31"));
+        Assert.False(Invalid(date, "2026-04-01"));
+        Assert.True(Invalid(field with { Type = "Dropdown", Options = ["Yes", "No"] }, "Other"));
+        Assert.False(Invalid(field with { Type = "Dropdown", Options = ["Yes", "No"] }, "Yes"));
+        Assert.True(Invalid(field with { Type = "Checkbox" }, false));
+        Assert.True(Invalid(field with { Type = "Checkbox" }, "true"));
+        Assert.False(Invalid(field with { Type = "Checkbox" }, true));
+        Assert.True(Invalid(field with { Type = "File" }, null));
+        Assert.True(Invalid(field with { Type = "File", Required = false }, "fake-file-id"));
+        Assert.False(Invalid(field with { Type = "File", Required = false }, null));
+    }
+
+    [Fact]
+    public async Task Attachments_validate_store_once_cleanup_rejections_and_protect_downloads()
+    {
+        using var studio = NewClient();
+        using var alice = NewClient();
+        using var bob = NewClient();
+        await RegisterAndLogin(studio, "file-owner@example.test");
+        await RegisterAndLogin(alice, "file-alice@example.test", "Portal");
+        await RegisterAndLogin(bob, "file-bob@example.test", "Portal");
+        var organization = await CreateOrganization(studio, "File Workspace");
+        var setup = await studio.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+        await Mutate(studio, HttpMethod.Post, "/api/auth/mfa/enable", new { code = AuthenticatorCode(setup.GetProperty("sharedKey").GetString()!) });
+        foreach (var email in new[] { "file-alice@example.test", "file-bob@example.test" })
+            await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/members", new { email, role = "Member" });
+        await Mutate(alice, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        await Mutate(bob, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        var created = await Mutate(studio, HttpMethod.Post, "/api/forms", new { name = "File response" });
+        var formId = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var fileField = Guid.NewGuid();
+        var optionalFile = Guid.NewGuid();
+        var nameField = Guid.NewGuid();
+        var fields = new List<FlowOps.Api.Forms.FormField> {
+            new(nameField, "Text", "Name", true),
+            new(fileField, "File", "Receipt", true, MaxFileSizeMb: 1, AcceptedExtensions: [".pdf", ".png", ".jpg", ".jpeg", ".txt", ".csv"]),
+            new(optionalFile, "File", "Notes", false, MaxFileSizeMb: 1, AcceptedExtensions: [".txt"])
+        };
+        await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields", new { fields, draftRevision = 0 });
+        await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 1 });
+        var publicationId = (await alice.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}")).GetProperty("id").GetGuid();
+        var submissionId = Guid.NewGuid();
+        var values = new Dictionary<Guid, object> { [nameField] = "Alice" };
+        var body = new { publicationId, requestId = submissionId, values };
+        var root = $"/api/portal/forms/{formId}/submissions";
+        var uploadPath = root + "/with-files";
+        var bytes = System.Text.Encoding.UTF8.GetBytes("Uploaded notes\n");
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [])).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "notes.txt", bytes)], false)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Upload(studio, uploadPath, body, [(fileField, "notes.txt", bytes)])).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "script.exe", bytes)])).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "fake.pdf", bytes)])).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "empty.txt", [])])).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "big.txt", new byte[1024 * 1024 + 1])])).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(nameField, "notes.txt", bytes)])).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "one.txt", bytes), (fileField, "two.txt", bytes)])).StatusCode);
+        // The first valid file must be removed if a subsequent file fails validation.
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath, body, [(fileField, "notes.txt", bytes), (optionalFile, "binary.txt", [0, 1, 2])])).StatusCode);
+        Assert.Empty(Directory.Exists(_uploadRoot) ? Directory.GetFiles(_uploadRoot, "*.bin", SearchOption.AllDirectories) : []);
+        var savedUpload = await Upload(alice, uploadPath, body, [(fileField, "../../notes.txt", bytes)]);
+        Assert.True(savedUpload.StatusCode == HttpStatusCode.Created, await savedUpload.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.OK, (await Upload(alice, uploadPath, body, [(fileField, "../../notes.txt", bytes)])).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Upload(alice, uploadPath, body, [(fileField, "different.txt", bytes)])).StatusCode);
+        Assert.Single(Directory.GetFiles(_uploadRoot, "*.bin", SearchOption.AllDirectories));
+        var detail = await alice.GetFromJsonAsync<JsonElement>($"{root}/{submissionId}");
+        var file = Assert.Single(detail.GetProperty("files").EnumerateArray());
+        var fileId = file.GetProperty("id").GetGuid();
+        Assert.Equal("notes.txt", file.GetProperty("fileName").GetString());
+        Assert.Equal(bytes.Length, file.GetProperty("size").GetInt64());
+        Assert.False(file.TryGetProperty("sha256", out _));
+        Assert.False(detail.GetProperty("submission").TryGetProperty("requestFingerprint", out _));
+        var downloadPath = $"{root}/{submissionId}/files/{fileId}";
+        var download = await alice.GetAsync(downloadPath);
+        Assert.Equal(HttpStatusCode.OK, download.StatusCode);
+        Assert.Equal(bytes, await download.Content.ReadAsByteArrayAsync());
+        Assert.Equal("attachment", download.Content.Headers.ContentDisposition!.DispositionType);
+        Assert.Equal("nosniff", Assert.Single(download.Headers.GetValues("X-Content-Type-Options")));
+        Assert.Equal(HttpStatusCode.NotFound, (await bob.GetAsync(downloadPath)).StatusCode);
+        using var anonymous = NewClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(downloadPath)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await studio.GetAsync($"/api/forms/{formId}/submissions/{submissionId}/files/{fileId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await alice.GetAsync($"{root}/{Guid.NewGuid()}/files/{fileId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(alice, HttpMethod.Post, root,
+            new { publicationId, requestId = Guid.NewGuid(), values = new Dictionary<Guid, object>(values) { [fileField] = fileId } })).StatusCode);
+        // Each allowed extension has a valid fixture, and the original remains downloadable after republishing.
+        foreach (var fixture in new[] {
+            ("receipt.pdf", "%PDF-1.4\n%%EOF"u8.ToArray()),
+            ("receipt.png", Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP1kAAAAASUVORK5CYII=")),
+            ("receipt.jpg", new byte[] { 255, 216, 255, 224, 0, 16 }),
+            ("receipt.jpeg", new byte[] { 255, 216, 255, 224, 0, 16 }),
+            ("notes.csv", "name,value\nAlice,1"u8.ToArray()) })
+            Assert.Equal(HttpStatusCode.Created, (await Upload(alice, uploadPath, new { publicationId, requestId = Guid.NewGuid(), values }, [(fileField, fixture.Item1, fixture.Item2)])).StatusCode);
+        var thirdFile = Guid.NewGuid();
+        var largeFields = new[] { fields[0], fields[1] with { MaxFileSizeMb = 10 }, fields[2] with { MaxFileSizeMb = 10 },
+            new FlowOps.Api.Forms.FormField(thirdFile, "File", "Extra", MaxFileSizeMb: 1, AcceptedExtensions: [".txt"]) };
+        await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields", new { fields = largeFields, draftRevision = 2 });
+        await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 3 });
+        var largePublication = (await alice.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}")).GetProperty("id").GetGuid();
+        var sixMb = Enumerable.Repeat((byte)'a', 6 * 1024 * 1024).ToArray();
+        var tenMb = Enumerable.Repeat((byte)'a', 10 * 1024 * 1024).ToArray();
+        Assert.Equal(HttpStatusCode.BadRequest, (await Upload(alice, uploadPath,
+            new { publicationId = largePublication, requestId = Guid.NewGuid(), values },
+            [(fileField, "one.txt", tenMb), (optionalFile, "two.txt", tenMb), (thirdFile, "three.txt", [(byte)'a'])])).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await Upload(alice, uploadPath,
+            new { publicationId = largePublication, requestId = Guid.NewGuid(), values },
+            [(fileField, "one.txt", sixMb), (optionalFile, "two.txt", sixMb)])).StatusCode);
+        await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields", new { fields = new[] { fields[0] }, draftRevision = 4 });
+        await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 5 });
+        Assert.Equal(HttpStatusCode.OK, (await alice.GetAsync(downloadPath)).StatusCode);
+        var otherOrg = await CreateOrganization(studio, "Other File Workspace");
+        await Mutate(studio, HttpMethod.Post, $"/api/organizations/{otherOrg}/members", new { email = "file-alice@example.test", role = "Member" });
+        await Mutate(alice, HttpMethod.Post, $"/api/organizations/{otherOrg}/activate");
+        Assert.Equal(HttpStatusCode.NotFound, (await alice.GetAsync(downloadPath)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await studio.GetAsync($"/api/forms/{formId}/submissions/{submissionId}/files/{fileId}")).StatusCode);
+        await Mutate(alice, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        var aliceId = (await FlowOps.Api.Auth.AuthEndpoints.FindAccount(scope.ServiceProvider.GetRequiredService<UserManager<FlowUser>>(), "file-alice@example.test", "Portal"))!.Id;
+        Assert.Equal(HttpStatusCode.NoContent, (await Mutate(studio, HttpMethod.Delete, $"/api/organizations/{organization}/members/{aliceId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await alice.GetAsync(downloadPath)).StatusCode);
+        Assert.Equal(7, await db.FormSubmissions.CountAsync());
+        Assert.Equal(8, await db.FormAttachments.CountAsync());
+        Assert.Equal(8, await db.AuditEvents.CountAsync(x => x.Action == "form.file_uploaded"));
+        var attachment = await db.FormAttachments.SingleAsync(x => x.Id == fileId);
+        attachment.FileName = "tampered.txt";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
     }
 
     [Fact]

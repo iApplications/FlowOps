@@ -30,3 +30,8 @@ export type FormField = {
 };
 export type FormDraft = { id: string; name: string; description: string; fields: FormField[]; draftRevision: number; publicationCount: number };
 export type PublishedForm = { id: string; formId: string; name: string; description: string; fields: FormField[]; versionNumber: number; publishedAt: string };
+export type SubmissionValues = Record<string, string | number | boolean | null>;
+export type SubmissionSummary = { id: string; publicationId: string; versionNumber: number; name: string; submittedAt: string; submittedBy?: string | null; email?: string | null };
+export type SubmissionHistoryPage = { items: SubmissionSummary[]; total: number; page: number; pageSize: number };
+export type SubmissionFile = { id: string; fieldId: string; fileName: string; size: number };
+export type SubmissionDetail = { submission: { id: string; submittedAt: string; values: SubmissionValues }; form: PublishedForm; files: SubmissionFile[] };

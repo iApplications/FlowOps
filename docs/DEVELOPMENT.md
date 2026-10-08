@@ -10,6 +10,16 @@ The SeparateStudioPortalAccounts migration preserves legacy Studio signup marker
 
 ## Prerequisites
 
+### Form attachment storage
+
+Development uploads are stored outside the repository at `%LOCALAPPDATA%\FlowOps\Uploads`. Override with `Storage:RootPath` in an environment appsettings file, or set `Storage__RootPath` to an absolute path before starting the API. Outside Development the default is `App_Data/Uploads` under the API content root, ignored by Git. Storage must stay outside `wwwroot`.
+
+Apply the `FormSubmissions` and `FormAttachments` migrations before testing submissions with files. Files are uploaded with the form response, with one per File field, a configured 1–10 MB limit per field and a 20 MB total. Restart Portal after changing its proxy configuration. Both Studio and Portal download through authenticated API requests.
+
+Back up the configured storage folder together with PostgreSQL. The database stores attachment ownership, filename, size and content hash; file bytes live on disk. Validation checks basic signatures/UTF-8 encoding and does not include malware scanning. See [Progress](PROGRESS.md) and [Phase 2 tests](PHASE2.md).
+
+### Required tools
+
 - Node.js 20.9 or newer and npm
 - .NET 10 SDK
 - PostgreSQL 17 locally, or Docker Desktop with Compose
@@ -166,4 +176,4 @@ dotnet test FlowOps.slnx -c Release
 docker compose config
 ```
 
-The automated API tests use an in-memory SQLite database for authentication, CSRF, separate Studio/Portal accounts and sessions, MFA, password-reset, and cross-organization checks. The latest local run passed 16 tests. PostgreSQL migrations have been applied locally, and the Studio/Portal browser flows have undergone internal testing. Docker checks remain separate from the local Windows PostgreSQL setup. Complete internal testing before committing Phase 1.
+The automated API tests use an in-memory SQLite database for authentication, CSRF, separate Studio/Portal accounts and sessions, MFA, password reset, forms, submissions, attachments and cross-organization checks. Attachment tests use an isolated temporary storage folder. See [Progress](PROGRESS.md) for current verification and acceptance status. PostgreSQL migrations have been applied locally; internal browser checks are required before committing each work slice. Docker checks remain separate from the local Windows PostgreSQL setup.

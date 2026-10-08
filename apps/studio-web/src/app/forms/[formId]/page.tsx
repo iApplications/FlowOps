@@ -1,4 +1,4 @@
-import { DashboardShell, SurfaceShell, FormDesigner } from "@flowops/ui";
+import { DashboardShell, SurfaceShell, FormDesigner, SubmissionHistory } from "@flowops/ui";
 import type { CurrentUser, FormDraft } from "@flowops/types";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
@@ -25,5 +25,6 @@ export default async function DesignerPage({ params }: { params: Promise<{ formI
   return <DashboardShell surface="Studio" user={user} section="forms">
     <div className="designer-actions form-navigation"><Link className="btn" href="/forms">Back to Forms</Link></div>
     <FormDesigner key={form.id} initialForm={form} />
+    <SubmissionHistory key={`history-${form.id}`} formId={form.id} surface="Studio" />
   </DashboardShell>;
 }

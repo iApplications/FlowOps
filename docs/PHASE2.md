@@ -16,7 +16,7 @@ First work branch: `feat/phase2-form-foundation`.
 
 ## Current implementation
 
-Draft library, field designer/preview, immutable publishing and Portal viewing are implemented. Current work branch: `feat/phase2-form-publishing`. Submissions/history and file storage are still pending. Preview validates inputs locally and does not upload files or submit data. Portal renders the latest published version read-only until submissions are implemented.
+Draft library, field designer/preview, immutable publishing, Portal submissions, submission history and local file uploads/downloads are implemented. Current work branch: `feat/phase2-form-submissions` (committed as `926ecf2`). Server-side acceptance of submissions and uploads passed on 2026-10-08. Browser acceptance passed on the same day; the slice is ready to merge into `dev/Phase2_Form`. Preview validates inputs locally and does not submit or upload data. See [Progress](PROGRESS.md) for implementation, test and merge status.
 
 ## Internal test: draft library
 
@@ -49,7 +49,7 @@ Automated checks cover all field types, IDs/order/removal persistence, invalid r
 Apply the `FormPublishing` migration and restart the API. Existing forms remain unpublished.
 
 1. In Studio, open a saved form with at least one field. Publish version 1 and confirm the action. Empty forms and forms with unsaved field changes cannot be published.
-2. Sign in with a separate Portal account assigned to that organization. Open Forms from the header: only published forms appear. Open the form and check its name, description, field order, settings and version number. Inputs are read-only; submissions/uploads come next.
+2. Sign in with a separate Portal account assigned to that organization. Open Forms from the header: only published forms appear. Open the form and check its name, description, field order, settings and version number. Inputs support submission and file uploads.
 3. Edit and save the Studio draft's name or fields. Refresh Portal: version 1 must remain unchanged.
 4. Reload the designer after editing metadata, then publish version 2. Portal now shows version 2, with one entry for the form. Earlier versions remain stored unchanged.
 5. Open a draft in two Studio tabs. Publish or save in one, then try publishing from the stale tab. It must show an error and require reloading.
@@ -57,3 +57,37 @@ Apply the `FormPublishing` migration and restart the API. Existing forms remain 
 7. Portal cannot edit or publish drafts. Studio publishing requires Owner/Admin access and the organization's MFA policy.
 
 Automated backend checks verify snapshots survive draft edits, republishing preserves previous versions, stale revisions are rejected, published data cannot be modified through the context, and surface/organization boundaries hold. Run internal browser checks before committing this branch to `dev/Phase2_Form`.
+
+## Internal test: submissions and history
+
+Apply the `FormSubmissions` migration and rebuild/restart the API. The local development database has this migration applied.
+
+1. Publish a form containing all eight field types. Use required rules and limits; include required and optional File fields.
+2. Portal: open the form, try missing required values, excessive text, out-of-range numbers/dates and an unchecked required checkbox. Valid values should submit successfully; history appears below the form. Refresh the page and open the saved response.
+3. Studio: open the same form's designer. Submission history below it shows organization responses with the submitter and published version. Open a response to inspect its original field labels and values.
+4. Sign in with a second assigned Portal account. It must see only its own history. Trying another user's submission detail API URL must return 404. Studio managers can see both users' responses.
+5. Edit fields/name and publish a new version. Existing history must keep the old title, labels and values. A Portal page already open before republishing submits against the version it displayed; refreshing loads the newest version.
+6. Switch organizations and retry form/history URLs: submissions, history and details from another organization must be unavailable. Removing a Portal membership must also prevent access on the next request.
+7. During a submission the button and inputs are disabled. Repeating the same request ID with the same response returns the original submission, without adding another row or audit event. Changed values with an already saved request ID are rejected.
+8. Optional File fields can be left empty. Required File fields must contain a valid file. The server rejects missing required files and fabricated references to existing attachments.
+
+History is paginated at 25 rows. Submissions are immutable, store the publication ID and are validated against that snapshot on the server. Audits record submission metadata, not answer values. No workflow execution or approval is started in this slice.
+
+Automated checks cover all value types, invalid values/unknown fields, CSRF, duplicate requests, exact version retention, history privacy and organization boundaries. Internal browser testing remains required before commit.
+
+## Internal test: file uploads and downloads
+
+Apply `FormAttachments` after `FormSubmissions`, rebuild/restart the API and restart Portal to load its proxy configuration. Both migrations are applied to the local development database.
+
+1. In Studio, add required and optional File fields. Choose allowed extensions and a size limit of 1–10 MB, then save and publish.
+2. Portal: submit a valid PDF, PNG, JPG/JPEG, UTF-8 TXT or CSV permitted by the field. One file can be selected per field. Refresh and open the response; Download should save the original bytes with the original base filename.
+3. Studio: open the same response in submission history and download its attachments.
+4. Test a missing required file, a zero-byte file, an unapproved extension, a file over the field limit, and a text file renamed to `.pdf`/`.png`/`.jpg`. Each must fail with visible feedback. Optional fields can be left empty.
+5. With multiple File fields, verify total files over 20 MB are rejected. Verify more than 10 MB in total can succeed when individual fields allow it and total files remain at most 20 MB.
+6. Submit several files together; if one fails validation, no response or attachment should appear. Correct the problem and retry.
+7. Repeat the same request with unchanged values/files: history must contain one response. A changed file or filename with an already saved request ID must be rejected rather than overwrite the response.
+8. A second Portal user, an anonymous user, a user switched to another organization, and a user whose membership was removed must not be able to download the attachment. Studio requires its existing Owner/Admin and MFA permissions.
+9. Republish with the File field removed or changed. Existing responses must retain their original files and downloads.
+10. Studio Preview remains local: selecting a file and checking validation creates no response or stored attachment.
+
+Files use generated paths outside the public web folder. Only authenticated download endpoints expose them, with attachment disposition and no-store/nosniff headers. Validation checks extension, size, basic PDF/image signatures and UTF-8 text encoding; it does not fully parse documents/images or perform malware scanning.

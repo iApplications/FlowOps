@@ -97,7 +97,7 @@ export function FormDesigner({ initialForm }: { initialForm: FormDraft }) {
           {selected.type === "Date" && <>{(["minDate", "maxDate"] as const).map(limit => <label className="field" key={limit}>{limit === "minDate" ? "Earliest date" : "Latest date"}<input type="date" value={selected[limit] ?? ""} onChange={event => patch({ [limit]: event.target.value || null })} /></label>)}</>}
           {selected.type === "Dropdown" && <label className="field">Options (one per line)<textarea value={selected.options?.join("\n") ?? ""} onChange={event => patch({ options: event.target.value.split("\n") })} /></label>}
           {selected.type === "File" && <><label className="field">Maximum file size (MB)<input type="number" min={1} max={10} value={selected.maxFileSizeMb ?? ""} onChange={event => patch({ maxFileSizeMb: event.target.value === "" ? null : Number(event.target.value) })} /></label>
-            <label className="field">Allowed extensions (comma separated)<input value={selected.acceptedExtensions?.join(", ") ?? ""} onChange={event => patch({ acceptedExtensions: event.target.value.split(",").map(value => value.trim().toLowerCase()) })} /></label><p className="helper">PDF, PNG, JPG, JPEG, TXT, CSV. Upload storage comes later.</p></>}
+            <label className="field">Allowed extensions (comma separated)<input value={selected.acceptedExtensions?.join(", ") ?? ""} onChange={event => patch({ acceptedExtensions: event.target.value.split(",").map(value => value.trim().toLowerCase()) })} /></label><p className="helper">PDF, PNG, JPG, JPEG, TXT, CSV. One file per field; all files together: up to 20 MB.</p></>}
         </> : <p className="empty-state">Select a field to configure it.</p>}</div>
       </fieldset>}
   </section>;
