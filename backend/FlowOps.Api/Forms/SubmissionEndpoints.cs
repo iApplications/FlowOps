@@ -69,11 +69,9 @@ public static class SubmissionEndpoints
 
     private static async Task<IResult> SubmitFiles(Guid formId, HttpContext context, FlowOpsDbContext db, LocalFileStorage storage)
     {
+        // The overall body limit is applied before antiforgery reads the form; see UploadRequestLimit in Program.cs.
         if (!context.Request.HasFormContentType || !context.Request.ContentType!.StartsWith("multipart/form-data", StringComparison.OrdinalIgnoreCase))
             return Results.BadRequest(new { error = "Send form values and files as multipart form data." });
-        if (context.Request.ContentLength > LocalFileStorage.MaxRequestBytes) return Results.BadRequest(new { error = "Files must total 20 MB or less." });
-        var sizeFeature = context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>();
-        if (sizeFeature is { IsReadOnly: false }) sizeFeature.MaxRequestBodySize = LocalFileStorage.MaxRequestBytes;
         var savedFiles = new List<FormAttachment>();
         var committed = false;
         try
@@ -94,6 +92,16 @@ public static class SubmissionEndpoints
             foreach (var file in multipart.Files)
                 if (!Guid.TryParse(file.Name, out var fieldId) || !fileFields.ContainsKey(fieldId) || !uploadedFields.Add(fieldId))
                     return Results.BadRequest(new { error = "Each file must belong to a distinct File field in this published form." });
+            // Retries are answered before anything is written to disk.
+            var existing = await db.FormSubmissions.AsNoTracking().SingleOrDefaultAsync(x => x.Id == request.RequestId);
+            if (existing is not null)
+            {
+                var uploads = new List<FileFingerprint>();
+                foreach (var file in multipart.Files)
+                    uploads.Add(new(Guid.Parse(file.Name), LocalFileStorage.CleanFileName(file.FileName), file.Length, await LocalFileStorage.HashAsync(file, context.RequestAborted)));
+                return Retry(existing, session.UserId, publication.Id, Fingerprint(request.Values, uploads));
+            }
+            if (await HasNewerVersion(db, publication)) return StaleVersion();
             if (request.Values.Any(x => fileFields.ContainsKey(x.Key) && x.Value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)))
                 return Results.BadRequest(new { error = "File values must come from uploads, not existing file references." });
             var values = new Dictionary<Guid, JsonElement>(request.Values);
@@ -107,12 +115,7 @@ public static class SubmissionEndpoints
                 savedFiles.Add(saved);
                 values[fieldId] = JsonSerializer.SerializeToElement(saved.Id);
             }
-            var fingerprintJson = JsonSerializer.Serialize(new {
-                values = request.Values.OrderBy(x => x.Key).ToDictionary(x => x.Key, x => x.Value),
-                files = savedFiles.OrderBy(x => x.FieldId).Select(x => new { x.FieldId, x.FileName, x.Size, x.Sha256 }) });
-            var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(fingerprintJson)));
-            var existing = await db.FormSubmissions.AsNoTracking().SingleOrDefaultAsync(x => x.Id == request.RequestId);
-            if (existing is not null) return RetryFiles(existing, session.UserId, publication.Id, fingerprint);
+            var fingerprint = Fingerprint(request.Values, savedFiles.Select(x => new FileFingerprint(x.FieldId, x.FileName, x.Size, x.Sha256)));
             var submission = new FormSubmission { Id = request.RequestId, FormId = formId, PublicationId = publication.Id,
                 OrganizationId = publication.OrganizationId, UserId = session.UserId,
                 ValuesJson = JsonSerializer.Serialize(values.OrderBy(x => x.Key).ToDictionary(x => x.Key, x => x.Value)), RequestFingerprint = fingerprint };
@@ -125,7 +128,7 @@ public static class SubmissionEndpoints
             {
                 var winner = await db.FormSubmissions.AsNoTracking().SingleOrDefaultAsync(x => x.Id == request.RequestId);
                 if (winner is null) throw;
-                return RetryFiles(winner, session.UserId, publication.Id, fingerprint);
+                return Retry(winner, session.UserId, publication.Id, fingerprint);
             }
             committed = true;
             return Results.Created($"/api/portal/forms/{formId}/submissions/{submission.Id}", new { submission.Id, submission.SubmittedAt });
@@ -136,24 +139,21 @@ public static class SubmissionEndpoints
         finally { if (!committed) foreach (var file in savedFiles) storage.Delete(file); }
     }
 
-    private static IResult RetryFiles(FormSubmission existing, string userId, Guid publicationId, string fingerprint) =>
-        existing.UserId == userId && existing.PublicationId == publicationId && existing.RequestFingerprint == fingerprint
-            ? Results.Ok(new { existing.Id, existing.SubmittedAt })
-            : Results.Conflict(new { error = "This request ID was already used. Refresh history before submitting another response." });
-
     private static async Task<IResult> Submit(Guid formId, SubmitFormRequest request, HttpContext context, FlowOpsDbContext db)
     {
         var session = AuthEndpoints.CurrentSession(context)!;
         var publication = await db.FormPublications.AsNoTracking().SingleOrDefaultAsync(x => x.Id == request.PublicationId && x.FormId == formId && x.OrganizationId == session.ActiveOrganizationId);
         if (publication is null) return Results.NotFound(new { error = "Published form not found in the active organization." });
-        if (request.RequestId == Guid.Empty) return Results.BadRequest(new { error = "A submission request ID is required." });
+        if (request.RequestId == Guid.Empty || request.Values is null) return Results.BadRequest(new { error = "Provide valid submission values and a request ID." });
+        var fingerprint = Fingerprint(request.Values, []);
+        var existing = await db.FormSubmissions.AsNoTracking().SingleOrDefaultAsync(x => x.Id == request.RequestId);
+        if (existing is not null) return Retry(existing, session.UserId, publication.Id, fingerprint);
+        if (await HasNewerVersion(db, publication)) return StaleVersion();
         var errors = SubmissionValidation.Validate(publication.Fields, request.Values);
         if (errors.Count > 0) return Results.ValidationProblem(errors);
-        var valuesJson = JsonSerializer.Serialize(request.Values!.OrderBy(x => x.Key).ToDictionary(x => x.Key, x => x.Value));
-        var existing = await db.FormSubmissions.AsNoTracking().SingleOrDefaultAsync(x => x.Id == request.RequestId);
-        if (existing is not null) return Retry(existing, session.UserId, publication.Id, valuesJson);
         var submission = new FormSubmission { Id = request.RequestId, FormId = formId, PublicationId = publication.Id,
-            OrganizationId = publication.OrganizationId, UserId = session.UserId, ValuesJson = valuesJson };
+            OrganizationId = publication.OrganizationId, UserId = session.UserId,
+            ValuesJson = JsonSerializer.Serialize(request.Values.OrderBy(x => x.Key).ToDictionary(x => x.Key, x => x.Value)), RequestFingerprint = fingerprint };
         db.FormSubmissions.Add(submission);
         AuditService.Append(db, "form.submitted", session.UserId, submission.Id.ToString(), submission.OrganizationId);
         try { await db.SaveChangesAsync(); }
@@ -161,15 +161,33 @@ public static class SubmissionEndpoints
         {
             var winner = await db.FormSubmissions.AsNoTracking().SingleOrDefaultAsync(x => x.Id == request.RequestId);
             if (winner is null) throw;
-            return Retry(winner, session.UserId, publication.Id, valuesJson);
+            return Retry(winner, session.UserId, publication.Id, fingerprint);
         }
         return Results.Created($"/api/portal/forms/{formId}/submissions/{submission.Id}", new { submission.Id, submission.SubmittedAt });
     }
 
-    private static IResult Retry(FormSubmission existing, string userId, Guid publicationId, string valuesJson) =>
-        existing.UserId == userId && existing.PublicationId == publicationId && existing.ValuesJson == valuesJson
+    // New submissions must use the latest published version; a page opened before republishing is told to reload.
+    private static Task<bool> HasNewerVersion(FlowOpsDbContext db, FormPublication publication) =>
+        db.FormPublications.AnyAsync(x => x.FormId == publication.FormId && x.OrganizationId == publication.OrganizationId && x.VersionNumber > publication.VersionNumber);
+
+    private static IResult StaleVersion() =>
+        Results.Conflict(new { error = "This form has been updated. Reload the page to submit the latest version.", code = "form_version_outdated" });
+
+    // One idempotency fingerprint for both endpoints: submitted values plus each upload's field, name, size and hash.
+    private static string Fingerprint(Dictionary<Guid, JsonElement> values, IEnumerable<FileFingerprint> files)
+    {
+        var json = JsonSerializer.Serialize(new {
+            values = values.OrderBy(x => x.Key).ToDictionary(x => x.Key, x => x.Value),
+            files = files.OrderBy(x => x.FieldId).Select(x => new { x.FieldId, x.FileName, x.Size, x.Sha256 }) });
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
+    }
+
+    private static IResult Retry(FormSubmission existing, string userId, Guid publicationId, string fingerprint) =>
+        existing.UserId == userId && existing.PublicationId == publicationId && existing.RequestFingerprint == fingerprint
             ? Results.Ok(new { existing.Id, existing.SubmittedAt })
-            : Results.Conflict(new { error = "This request ID was already used. Reload before submitting a new response." });
+            : Results.Conflict(new { error = "This request ID was already used. Refresh history before submitting another response." });
+
+    private sealed record FileFingerprint(Guid FieldId, string FileName, long Size, string Sha256);
 }
 
 public sealed record SubmitFormRequest(Guid PublicationId, Guid RequestId, Dictionary<Guid, JsonElement>? Values);

@@ -28,7 +28,7 @@ export type FormField = {
   minDate?: string | null; maxDate?: string | null; options?: string[] | null;
   maxFileSizeMb?: number | null; acceptedExtensions?: string[] | null;
 };
-export type FormDraft = { id: string; name: string; description: string; fields: FormField[]; draftRevision: number; publicationCount: number };
+export type FormDraft = { id: string; name: string; description: string; fields: FormField[]; draftRevision: number; publicationCount: number; hasUnpublishedChanges?: boolean | null };
 export type PublishedForm = { id: string; formId: string; name: string; description: string; fields: FormField[]; versionNumber: number; publishedAt: string };
 export type SubmissionValues = Record<string, string | number | boolean | null>;
 export type SubmissionSummary = { id: string; publicationId: string; versionNumber: number; name: string; submittedAt: string; submittedBy?: string | null; email?: string | null };

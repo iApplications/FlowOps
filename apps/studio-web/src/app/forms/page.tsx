@@ -10,8 +10,7 @@ export default async function FormsPage() {
   let response: Response;
   let access: Response;
   try {
-    response = await fetch(`${apiUrl}/api/auth/me`, options);
-    access = await fetch(`${apiUrl}/api/studio/access`, options);
+    [response, access] = await Promise.all([fetch(`${apiUrl}/api/auth/me`, options), fetch(`${apiUrl}/api/studio/access`, options)]);
   } catch {
     return <SurfaceShell title="Forms unavailable" description="Start the FlowOps API and try again." />;
   }

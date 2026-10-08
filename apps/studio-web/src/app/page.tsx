@@ -16,9 +16,16 @@ export default async function Home() {
   if (!response.ok) return <SurfaceShell title="Studio unavailable" description="The API could not load your account." />;
   const user = await response.json() as CurrentUser;
   if (user.accountSurface !== "Studio") redirect("/login");
-  const access = await fetch(`${apiUrl}/api/studio/access`, { headers: { cookie, "X-FlowOps-Surface": "Studio" }, cache: "no-store" });
-  if (access.status === 403) {
-    const onboarding = await fetch(`${apiUrl}/api/auth/studio-onboarding`, { headers: { cookie, "X-FlowOps-Surface": "Studio" }, cache: "no-store" });
+  let access: Response;
+  let onboarding: Response | null = null;
+  try {
+    access = await fetch(`${apiUrl}/api/studio/access`, { headers: { cookie, "X-FlowOps-Surface": "Studio" }, cache: "no-store" });
+    if (access.status === 403)
+      onboarding = await fetch(`${apiUrl}/api/auth/studio-onboarding`, { headers: { cookie, "X-FlowOps-Surface": "Studio" }, cache: "no-store" });
+  } catch {
+    return <SurfaceShell title="Studio unavailable" description="Start the FlowOps API and try again." />;
+  }
+  if (onboarding) {
     if (onboarding.ok) {
       return <SurfaceShell title="Set up your Studio workspace" description="Create a business workspace to become its Owner, then enable your authenticator in Security. Studio management becomes available after workspace access and MFA are ready.">
         <WorkspaceAccount initialUser={user} surface="Studio" onboarding />

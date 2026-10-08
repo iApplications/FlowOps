@@ -1,17 +1,15 @@
 {
   "profiles": {
-    "FlowOps.Api HTTPS": {
+    "FlowOps.Api": {
       "commandName": "Project",
       "launchBrowser": true,
       "launchUrl": "swagger",
-      "applicationUrl": "https://localhost:5443",
+      "applicationUrl": "http://localhost:5050",
       "environmentVariables": {
-        "ASPNETCORE_ENVIRONMENT": "Development",
-        "StudioUrl": "https://localhost:3443",
-        "PortalUrl": "https://localhost:3444"
+        "ASPNETCORE_ENVIRONMENT": "Development"
       }
     },
-    "FlowOps.Api": {
+    "FlowOps.Api HTTPS": {
       "commandName": "Project",
       "launchBrowser": true,
       "launchUrl": "swagger",
