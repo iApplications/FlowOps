@@ -42,15 +42,17 @@ FlowOps has two primary web experiences. Both use the same backend platform, aut
                     │ AI                           │
                     └───────┬────────┬─────────────┘
                             │        │
-                            │        └──────────────► Redis
+                            │        └──────────────► Redis (when needed)
                             │
                             ├───────────────────────► PostgreSQL
                             │
-                            └───────────────────────► RabbitMQ
+                            └───────────────────────► RabbitMQ (when needed)
                                                           │
                                                           ▼
                                                   Background Workers
 ```
+
+PostgreSQL is the only required data store today. Redis and RabbitMQ are target components and are introduced only when a concrete caching, session, or asynchronous-processing requirement exists (see [`PROJECT_RULES.md`](PROJECT_RULES.md) §18 and Background Processing below).
 
 ### Surface Responsibilities
 
@@ -108,7 +110,7 @@ Represents a workspace/company using FlowOps.
 
 ### User
 
-A person who belongs to one or more organizations.
+A sign-in account that belongs to exactly one surface (Studio or Portal) and can be a member of one or more organizations. The same person may hold one Studio account and one Portal account under the same email; they are separate users. See **Studio and Portal Accounts** below.
 
 ### Role
 
@@ -260,6 +262,24 @@ SameSite = appropriate for the deployment model
 ```
 
 State-changing browser requests must use CSRF/antiforgery protection. Authentication or refresh credentials must not be stored in browser `localStorage`.
+
+### Studio and Portal Accounts
+
+Studio and Portal share one backend, one ASP.NET Core Identity store, one authorization pipeline, and one organization model, but each account belongs to exactly one surface.
+
+```text
+FlowUser
+├── AccountSurface = Studio | Portal
+└── Unique (AccountSurface, NormalizedEmail)
+```
+
+- The same email can register once on each surface. The two accounts have separate passwords, email confirmation, password-reset tokens, MFA keys, recovery codes, organization memberships, and browser sessions.
+- Authentication requests specify the target `surface`. Browser API requests and server-side page checks send `X-FlowOps-Surface`, which selects the surface-specific session cookie (`FlowOps.Session.Studio` / `FlowOps.Session.Portal`). The header only selects a cookie; it never grants permissions.
+- Authorization checks the account's stored `AccountSurface`. Studio permissions require a Studio account; Portal access requires a Portal account.
+- Roles are tied to surfaces: Owner and Admin memberships belong to Studio accounts, Member memberships to Portal accounts. Changing a role cannot move an account between surfaces; giving the same person access to the other surface requires their separate account on that surface.
+- Only Studio accounts can create organizations.
+
+Logic for authentication remains shared in the backend; only the account record and session are separated per surface.
 
 ### MFA and Privileged Access
 

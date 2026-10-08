@@ -15,7 +15,7 @@ FlowOps Studio  → administrators, owners, builders, managers
 FlowOps Portal  → employees, requesters, approvers, customers, guests
 ```
 
-Both surfaces use the same backend identity, authorization, organization, and security model.
+Both surfaces use the same backend identity store, authorization pipeline, organization model, and security controls. Accounts, however, are **separate per surface**: each account belongs to either Studio or Portal, and the same email may register once on each with independent credentials, MFA, memberships, and sessions. See **Surface Account Separation** below.
 
 The backend is the security boundary. Frontend visibility rules are only a usability feature and must never be treated as authorization.
 
@@ -65,6 +65,20 @@ State-changing browser requests must use CSRF/antiforgery protection.
 Authentication or refresh credentials must **not** be persisted in browser `localStorage`.
 
 All production authentication traffic must use HTTPS.
+
+### Surface Account Separation
+
+Each account record carries an `AccountSurface` of `Studio` or `Portal`, and email uniqueness is enforced per surface. A Studio account and a Portal account with the same email are different principals with separate:
+
+- Passwords, email-confirmation and password-reset tokens
+- MFA authenticator keys and recovery codes
+- Lockout counters
+- Organization memberships
+- Browser sessions (`FlowOps.Session.Studio` / `FlowOps.Session.Portal`)
+
+Authentication requests specify the target surface. Browser API requests send `X-FlowOps-Surface` to select which session cookie is read. This header is only a cookie selector and must never grant permissions; authorization always uses the account's stored `AccountSurface` and server-side memberships.
+
+A compromise of one surface's credentials or session must not grant access to the other surface's account.
 
 ---
 
@@ -130,16 +144,25 @@ ALLOW
 
 Use roles for broad job functions and policies/permissions for actual capabilities.
 
-Example roles:
+Roles implemented in Phase 1:
 
 ```text
-Owner
-Admin
+Owner   → Studio account; creates the organization; cannot be changed or removed
+Admin   → Studio account; manages members
+Member  → Portal account; participant access
+```
+
+Roles are bound to account surfaces: Owner/Admin memberships require a Studio account and Member memberships require a Portal account. The backend rejects role changes that would cross surfaces; giving a person access to the other surface requires adding their separate account on that surface.
+
+Candidate roles for later phases, as workflow and approval features arrive:
+
+```text
 Workflow Designer
 Manager
 Approver
-Member
 ```
+
+Each new role must declare which surface it belongs to.
 
 Example permissions:
 
@@ -207,7 +230,7 @@ Step-up authentication for selected high-risk actions
 
 Portal users should receive only the forms, tasks, approvals, documents, and status data they are authorized to access.
 
-A Portal user must not gain Studio privileges by navigating directly to a Studio route or manually calling a Studio API. Backend authorization is authoritative.
+A Portal user must not gain Studio privileges by navigating directly to a Studio route or manually calling a Studio API. Backend authorization is authoritative: Studio permissions require a Studio account, and Portal accounts cannot create organizations or hold Owner/Admin roles.
 
 Organization policy may require MFA for approvers or all members if needed.
 
@@ -540,6 +563,9 @@ Important tests include:
 
 - Unauthenticated access is denied
 - Wrong-role access is denied
+- Portal accounts and sessions cannot use Studio APIs, and Studio accounts cannot use Portal-only access
+- Credentials, MFA codes, and sessions for one surface's account do not authenticate the same email's account on the other surface
+- Role changes that would cross account surfaces are rejected
 - Cross-organization reads are denied
 - Cross-organization writes are denied
 - Hidden Studio APIs remain inaccessible to Portal-only users
