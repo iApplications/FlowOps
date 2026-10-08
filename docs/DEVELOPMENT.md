@@ -143,13 +143,13 @@ Local HTTPS transport checks passed for both login pages, API health, and both w
 
 Local HTTPS validates development TLS and cookie behavior. Deployment certificate chains, TLS termination, trusted forwarding headers, and production HSTS still require verification in the intended deployment environment.
 
-### Phase 1 branch workflow
+### Branch workflow
 
-`dev/Phase1_Authentication` is the Phase 1 integration branch. Create each Phase 1 work branch from it and target pull requests back to it, rather than `main`. The current verification branch is `feat/phase1-security-verification`.
+Phase 1 was merged to `main` in PR #5; the former `dev/Phase1_Authentication` integration branch is no longer used. Create each work branch from `main` and target pull requests back to `main`. Use a descriptive prefix such as `feat/`, `fix/`, or `docs/`.
 
-Keep code changes uncommitted until internal testing passes and commit approval is given. Merge the integration branch to `main` only after all core Phase 1 deliverables and acceptance checks are complete.
+Keep code changes uncommitted until internal testing passes and commit approval is given. A later phase may introduce its own integration branch if its work needs to land in several pull requests before reaching `main`; document it here when that happens.
 
-Phase 1 completion checks:
+Phase 1 completion checks (still outstanding: production HTTPS cookie verification):
 
 - Automated authentication, account separation, MFA, tenant isolation and permission tests pass.
 - Automated checks confirm session expiry, five-attempt lockout expiry for both account types, and Admin/Owner removal boundaries.
@@ -166,4 +166,4 @@ dotnet test FlowOps.slnx -c Release
 docker compose config
 ```
 
-The automated API tests use an in-memory SQLite database for authentication, CSRF, separate Studio/Portal accounts and sessions, MFA, password-reset, and cross-organization checks. The latest local run passed 16 tests. PostgreSQL migrations have been applied locally, and the Studio/Portal browser flows have undergone internal testing. Docker checks remain separate from the local Windows PostgreSQL setup. Complete internal testing before committing Phase 1.
+The automated API tests use an in-memory SQLite database for authentication, CSRF, separate Studio/Portal accounts and sessions, MFA, password-reset, and cross-organization checks. The latest local run passed 16 tests. PostgreSQL migrations have been applied locally, and the Studio/Portal browser flows have undergone internal testing. Docker checks remain separate from the local Windows PostgreSQL setup.
