@@ -35,3 +35,17 @@ export type SubmissionSummary = { id: string; publicationId: string; versionNumb
 export type SubmissionHistoryPage = { items: SubmissionSummary[]; total: number; page: number; pageSize: number };
 export type SubmissionFile = { id: string; fieldId: string; fileName: string; size: number };
 export type SubmissionDetail = { submission: { id: string; submittedAt: string; values: SubmissionValues }; form: PublishedForm; files: SubmissionFile[] };
+export type WorkflowNodeType = "Start" | "Condition" | "Approval" | "End";
+export type WorkflowNodeConfig = {
+  trigger?: "Manual" | "FormSubmitted" | null; formId?: string | null; expression?: string | null;
+  assigneeRole?: "Owner" | "Admin" | "Member" | null; instructions?: string | null; outcome?: string | null;
+};
+export type WorkflowNode = { id: string; type: WorkflowNodeType; label: string; position: { x: number; y: number }; config?: WorkflowNodeConfig | null };
+export type WorkflowConnection = { id: string; source: string; sourceHandle: string; target: string };
+export type WorkflowGraph = { schemaVersion: number; nodes: WorkflowNode[]; connections: WorkflowConnection[] };
+export type WorkflowSummary = {
+  id: string; name: string; description: string; revision: number; createdAt: string; updatedAt: string;
+  draftVersionNumber: number | null; publishedVersions: number;
+};
+export type WorkflowDraftVersion = { id: string; versionNumber: number; status: "Draft"; draftRevision: number; graph: WorkflowGraph; updatedAt: string };
+export type WorkflowDetail = Omit<WorkflowSummary, "draftVersionNumber"> & { draft: WorkflowDraftVersion | null };

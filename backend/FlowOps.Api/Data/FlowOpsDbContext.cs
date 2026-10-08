@@ -73,6 +73,8 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
     public DbSet<FlowOps.Api.Forms.FormPublication> FormPublications => Set<FlowOps.Api.Forms.FormPublication>();
     public DbSet<FlowOps.Api.Forms.FormSubmission> FormSubmissions => Set<FlowOps.Api.Forms.FormSubmission>();
     public DbSet<FlowOps.Api.Forms.FormAttachment> FormAttachments => Set<FlowOps.Api.Forms.FormAttachment>();
+    public DbSet<FlowOps.Api.Workflows.WorkflowDefinition> WorkflowDefinitions => Set<FlowOps.Api.Workflows.WorkflowDefinition>();
+    public DbSet<FlowOps.Api.Workflows.WorkflowVersion> WorkflowVersions => Set<FlowOps.Api.Workflows.WorkflowVersion>();
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
@@ -106,6 +108,10 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
             throw new InvalidOperationException("Form submissions are immutable.");
         if (ChangeTracker.Entries<FlowOps.Api.Forms.FormPublication>().Any(x => x.State is EntityState.Modified or EntityState.Deleted))
             throw new InvalidOperationException("Published forms are immutable.");
+        // A version stored as Published is frozen for life: runtime instances pin to it (Phase 4).
+        if (ChangeTracker.Entries<FlowOps.Api.Workflows.WorkflowVersion>().Any(x => x.State is EntityState.Modified or EntityState.Deleted
+                && x.Property(v => v.Status).OriginalValue == FlowOps.Api.Workflows.WorkflowVersionStatus.Published))
+            throw new InvalidOperationException("Published workflow versions are immutable.");
         if (ChangeTracker.Entries<AuditEvent>().Any(x => x.State is EntityState.Modified or EntityState.Deleted))
             throw new InvalidOperationException("Audit events are append-only.");
     }
@@ -146,6 +152,25 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
             entity.Property(x => x.Description).HasMaxLength(2000);
             entity.Property(x => x.DraftRevision).IsConcurrencyToken();
             entity.HasIndex(x => new { x.OrganizationId, x.Name });
+            entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Restrict);
+        });
+        builder.Entity<FlowOps.Api.Workflows.WorkflowDefinition>(entity =>
+        {
+            entity.Property(x => x.Name).HasMaxLength(120);
+            entity.Property(x => x.Description).HasMaxLength(2000);
+            entity.Property(x => x.Revision).IsConcurrencyToken();
+            entity.HasIndex(x => new { x.OrganizationId, x.Name });
+            entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Restrict);
+        });
+        builder.Entity<FlowOps.Api.Workflows.WorkflowVersion>(entity =>
+        {
+            entity.Property(x => x.Status).HasMaxLength(16);
+            entity.Property(x => x.DraftRevision).IsConcurrencyToken();
+            entity.HasIndex(x => new { x.WorkflowDefinitionId, x.VersionNumber }).IsUnique();
+            // At most one editable draft per workflow.
+            entity.HasIndex(x => x.WorkflowDefinitionId).IsUnique().HasFilter("\"Status\" = 'Draft'");
+            entity.HasIndex(x => x.OrganizationId);
+            entity.HasOne<FlowOps.Api.Workflows.WorkflowDefinition>().WithMany().HasForeignKey(x => x.WorkflowDefinitionId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Restrict);
         });
         builder.Entity<FlowUser>().Property(x => x.DisplayName).HasMaxLength(120);
