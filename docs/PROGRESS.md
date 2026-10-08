@@ -6,8 +6,8 @@ Updated: 2026-10-08
 
 - Phase 1 was internally tested and merged into `main`.
 - Phase 2 integration branch: `dev/Phase2_Form`. All Phase 2 work slices are merged into it: draft library (#6), field designer (#7), publishing (#8), submissions/history/uploads (#9), and code review hardening (#10).
-- Phase 2 is **implementation complete**. Remaining: the final Phase 2 acceptance below, then a PR from `dev/Phase2_Form` into `main`.
-- Next phase: Phase 3 Workflow Designer, on a new integration branch from `main` after the Phase 2 merge.
+- Phase 2 is **complete**: the user approved it and merged it into `main` on 2026-10-08 (#12), with the closeout docs (#11). The code on `main` is identical to the tested `dev/Phase2_Form` code (`8c7f447`).
+- Next phase: Phase 3 Workflow Designer, on a new integration branch from `main`.
 - No automatic commits or pushes; each merge follows internal testing and user approval.
 
 ## Delivery progress
@@ -23,7 +23,7 @@ Updated: 2026-10-08
 | Phase 2 submission history | Complete: Portal personal history, Studio organization history, original fields/values | Accepted 2026-10-08; merged into Phase 2 (#9) |
 | Phase 2 local file uploads/downloads | Complete: required/optional files, streaming validation, protected downloads | Accepted 2026-10-08; merged into Phase 2 (#9, #10) |
 | Code review hardening (Phase 1 + Phase 2) | Complete | Automated, API and browser acceptance passed 2026-10-08; merged into Phase 2 (#10) |
-| Phase 2 final acceptance and merge to main | Pending | See [Final Phase 2 acceptance](#final-phase-2-acceptance) |
+| Phase 2 final acceptance and merge to main | Complete | Approved by the user and merged into main 2026-10-08 (#12) |
 | Phase 3 workflows and subsequent roadmap phases | Pending | Not started |
 
 ## Phase 2 roadmap deliverables
@@ -98,13 +98,16 @@ Development storage defaults to `%LOCALAPPDATA%\FlowOps\Uploads`. Override with 
 
 ## Final Phase 2 acceptance
 
-The submissions/uploads slice and the review hardening are accepted. Before merging `dev/Phase2_Form` into `main`, run one end-to-end pass on the merged branch:
+Completed on 2026-10-08:
 
-- [x] Backend tests (25), lint, typecheck and production builds pass on the merged `dev/Phase2_Form` code (`8c7f447`, 2026-10-08).
-- [ ] Studio Forms library: create a draft, rename it and edit its description, refresh, and check that a stale tab's rename is rejected. Revision checks became mandatory in #10.
-- [ ] Studio designer: add fields, preview, save, publish. Publish is then disabled until a saved change exists.
-- [ ] Portal: the form appears, accepts a submission with a file, and history and downloads work in Portal and Studio.
-- [ ] Review the docs and approve the PR from `dev/Phase2_Form` into `main`.
+- Backend tests (25), lint, typecheck and production builds passed on the merged `dev/Phase2_Form` code (`8c7f447`).
+- The user approved Phase 2 and merged `dev/Phase2_Form` into `main` (#12).
+
+The end-to-end Studio/Portal pass below was proposed as the final check. It was not separately reported before the merge; repeat it as a regression check whenever the forms code changes:
+
+- Studio Forms library: create a draft, rename it and edit its description, refresh, and check that a stale tab's rename is rejected.
+- Studio designer: add fields, preview, save, publish. Publish is then disabled until a saved change exists.
+- Portal: the form appears, accepts a submission with a file, and history and downloads work in Portal and Studio.
 
 ## Current limitations
 

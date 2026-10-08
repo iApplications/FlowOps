@@ -155,7 +155,7 @@ Local HTTPS validates development TLS and cookie behavior. Deployment certificat
 
 ### Branch workflow
 
-Each phase has an integration branch: `dev/Phase1_Authentication` (merged into `main`) and `dev/Phase2_Form` (implementation complete; final acceptance pending). Create each work branch from the current phase's integration branch and target pull requests back to it, rather than `main`. Phase-specific delivery and test checklists live in documents such as [Phase 2](PHASE2.md); status is tracked in [Progress](PROGRESS.md).
+Each phase has an integration branch: `dev/Phase1_Authentication` and `dev/Phase2_Form`, both merged into `main`. Phase 3 starts a new integration branch from `main`. Create each work branch from the current phase's integration branch and target pull requests back to it, rather than `main`. Phase-specific delivery and test checklists live in documents such as [Phase 2](PHASE2.md); status is tracked in [Progress](PROGRESS.md).
 
 Keep code changes uncommitted until internal testing passes and commit approval is given. Merge an integration branch to `main` only after all core deliverables and acceptance checks of that phase are complete.
 

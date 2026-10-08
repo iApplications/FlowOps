@@ -16,7 +16,7 @@ Merged work branches: `feat/phase2-form-foundation` (#6), `feat/phase2-field-des
 
 ## Current implementation
 
-All five delivery steps are implemented and merged into `dev/Phase2_Form`: draft library, field designer/preview, immutable publishing, Portal submissions, submission history and local file uploads/downloads. Code review hardening was merged in #10. Preview validates inputs locally and does not submit or upload data. Remaining before merging into `main`: the [final Phase 2 acceptance](PROGRESS.md#final-phase-2-acceptance) pass on the merged branch.
+All five delivery steps are implemented and merged into `dev/Phase2_Form`: draft library, field designer/preview, immutable publishing, Portal submissions, submission history and local file uploads/downloads. Code review hardening was merged in #10. Preview validates inputs locally and does not submit or upload data. Phase 2 was approved and merged into `main` on 2026-10-08 (#12); see [final Phase 2 acceptance](PROGRESS.md#final-phase-2-acceptance).
 
 The internal test checklists below are kept as regression guides for each slice. They reflect current behavior, including the review hardening: mandatory draft revisions, no identical republishing, and latest-version-only submissions.
 
