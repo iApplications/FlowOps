@@ -125,12 +125,15 @@ Slice 1 (foundation) was merged into `dev/phase3_main` (#14). It includes:
 - the Studio **Workflows** list and navigation
 - audit events
 
-Slice 2 (canvas) is implemented on `feat/phase3-workflow-canvas` and awaits internal browser checks. It includes:
+Slice 2 (canvas) is implemented on `feat/phase3-workflow-canvas`; automated and browser checks passed on 2026-10-09. It includes:
 
 - `PUT /api/workflows/{id}/draft` with structural validation and revision checks
 - the React Flow designer at `/workflows/{id}`, opened from the Workflows list
 - node settings for all four types, including the Start form trigger
 - an unsaved-changes guard
+- refinements from the browser check:
+  - dark, white-outlined canvas cursors, because the system grab hands were hard to see on the light canvas
+  - a framed node settings panel with a type badge, description and footer
 
 React Flow (`@xyflow/react` 12.12.0, MIT, pinned) has its own entry point, `@flowops/ui/workflow-designer`, so it is bundled only into Studio's designer page; Portal does not include it. Saving a graph changes only the draft version, so a rename in another tab never blocks a graph save, and vice versa.
 
