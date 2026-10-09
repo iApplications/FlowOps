@@ -232,12 +232,12 @@ Automated checks cover:
 Each slice passed its own automated and browser checks before merging (#14, #15, #16). Before merging `dev/phase3_main` into `main`:
 
 - [x] Backend tests (54), lint, typecheck and production builds pass on the merged code (`6e32790`, 2026-10-10).
-- [ ] One end-to-end browser pass in Studio over local HTTPS:
+- [x] One end-to-end browser pass in Studio over local HTTPS (user-reported, 2026-10-10):
   1. Create "Expense approval" in Workflows.
   2. In the designer, build Start (form trigger with a published form) → Manager approval → Approved/Rejected ends.
   3. Save. The panel shows no issues and the list shows **Complete**.
   4. Refresh, then rename the workflow. Everything persists.
-- [ ] Spot-check a regression of Phase 2: create, publish and submit a form in Portal.
+- [x] Spot-check a regression of Phase 2 (passed 2026-10-10): create, publish and submit a form in Portal.
 - [ ] Review the docs and approve the PR from `dev/phase3_main` into `main`.
 
 Roadmap deliverables:

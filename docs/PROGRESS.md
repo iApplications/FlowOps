@@ -31,7 +31,7 @@ Updated: 2026-10-08
 | Phase 3 workflow foundation (slice 1) | Complete: definitions, Draft v1 with Start → End graph, Published-version guard, list/create/rename API, Studio Workflows list | Automated and browser checks passed 2026-10-08; merged into Phase 3 (#14) |
 | Phase 3 workflow canvas (slice 2) | Complete: React Flow designer, draft graph save with structural validation, node settings including the Start form trigger | Automated and browser checks passed 2026-10-09; merged into Phase 3 (#15) |
 | Phase 3 workflow validation (slice 3) | Complete: condition expression parser, completeness issues with node references, designer issues panel and highlighting, list issue counts | Automated and browser checks passed 2026-10-10; merged into Phase 3 (#16) |
-| Phase 3 final acceptance and merge to main | Pending | Automated checks passed on merged `dev/phase3_main` (`6e32790`); browser pass pending |
+| Phase 3 final acceptance and merge to main | Pending | Automated checks passed on merged `dev/phase3_main` (`6e32790`); browser pass passed 2026-10-10; PR into main pending |
 | Phase 4 and later roadmap phases | Pending | Not started |
 
 ## Phase 2 roadmap deliverables
