@@ -280,6 +280,17 @@ a { color: inherit; text-decoration: none; }
 .wf-node-approval { border-left-color: var(--accent); }
 .wf-node-end { border-left-color: #6b7280; }
 .wf-node-selected { border-color: var(--accent-strong); box-shadow: 0 0 0 3px rgba(8,127,115,.18); }
+.wf-node-issue { border-color: #d9a441; border-left-color: #d9a441; background: #fffbf1; }
+.wf-node-issue.wf-node-selected { box-shadow: 0 0 0 3px rgba(217,164,65,.3); }
+.wf-node-issue-badge { position: absolute; top: -9px; right: -9px; display: grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border: 2px solid var(--card); border-radius: 100px; background: #b7791f; color: #fff; font-size: 11px; font-weight: 800; }
+/* Completeness issues above the canvas. */
+.wf-issues { margin-top: 16px; padding: 12px 14px; border: 1px solid #e8d7aa; border-radius: 12px; background: #fff9e8; color: #785b1a; font-size: 13px; }
+.wf-issues-clear { border-color: #bcdfca; background: #edf8ef; color: #295b37; }
+.wf-issues-header { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.wf-issues ul { margin: 10px 0 0; padding-left: 18px; max-height: 150px; overflow: auto; }
+.wf-issues li { margin: 3px 0; }
+.wf-issue-link { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; text-decoration: underline; text-underline-offset: 2px; }
+.wf-issue-link:hover { color: #5a420f; }
 .wf-node-type { display: block; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
 .wf-node-label { display: block; margin: 3px 0; font-size: 14px; overflow-wrap: anywhere; }
 .wf-node-summary { display: block; color: var(--muted); overflow-wrap: anywhere; }

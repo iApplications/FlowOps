@@ -46,7 +46,10 @@ export function WorkflowLibrary({ organizationName }: { organizationName: string
     {loading ? <p className="empty-state">Loading workflows…</p> : workflows.length === 0 ? <p className="empty-state">Create your first workflow for this organization.</p> :
       <div className="org-list">{workflows.map(workflow => <button key={workflow.id} type="button" disabled={busy} className={`org-option ${selectedId === workflow.id ? "org-option-active" : ""}`} onClick={() => select(workflow)}>
         <span><strong>{workflow.name}</strong><small style={{ display: "block" }}>{workflow.description || "No description"}</small></span>
-        <span className="tag">{workflow.draftVersionNumber ? `Draft v${workflow.draftVersionNumber}` : "No draft"}{workflow.publishedVersions ? ` · ${workflow.publishedVersions} published` : ""}</span>
+        <span className="designer-actions">
+          <span className="tag">{workflow.draftVersionNumber ? `Draft v${workflow.draftVersionNumber}` : "No draft"}{workflow.publishedVersions ? ` · ${workflow.publishedVersions} published` : ""}</span>
+          {workflow.issueCount !== null && <span className={workflow.issueCount ? "tag tag-warning" : "tag"}>{workflow.issueCount ? `${workflow.issueCount} ${workflow.issueCount === 1 ? "issue" : "issues"}` : "Complete"}</span>}
+        </span>
       </button>)}</div>}
     <div className="section-divider" />
     <form onSubmit={save} className="stack-form">

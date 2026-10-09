@@ -6,11 +6,11 @@ import {
   ReactFlow, ReactFlowProvider, Background, Controls, MiniMap, Handle, Position, useReactFlow,
   applyNodeChanges, applyEdgeChanges, type Node, type Edge, type NodeProps, type NodeChange, type EdgeChange, type Connection,
 } from "@xyflow/react";
-import type { WorkflowDetail, WorkflowGraph, WorkflowNodeConfig, WorkflowNodeType } from "@flowops/types";
+import type { WorkflowDetail, WorkflowGraph, WorkflowIssue, WorkflowNodeConfig, WorkflowNodeType } from "@flowops/types";
 import { apiRequest } from "@flowops/api-client";
 
-// summary is display-only text derived at render time; it is never saved.
-type NodeData = { label: string; nodeType: WorkflowNodeType; config: WorkflowNodeConfig; summary?: string };
+// summary and issueCount are display-only values derived at render time; they are never saved.
+type NodeData = { label: string; nodeType: WorkflowNodeType; config: WorkflowNodeConfig; summary?: string; issueCount?: number };
 type FlowNode = Node<NodeData>;
 type FormOption = { id: string; name: string; publicationCount: number };
 
@@ -42,8 +42,9 @@ function summary(data: NodeData, forms: FormOption[]) {
 
 function WorkflowNodeCard({ data, selected }: NodeProps<FlowNode>) {
   const handles = outputs[data.nodeType];
-  return <div className={`wf-node wf-node-${data.nodeType.toLowerCase()} ${selected ? "wf-node-selected" : ""}`}>
+  return <div className={`wf-node wf-node-${data.nodeType.toLowerCase()} ${selected ? "wf-node-selected" : ""} ${data.issueCount ? "wf-node-issue" : ""}`}>
     {data.nodeType !== "Start" && <Handle type="target" position={Position.Left} className="wf-handle" />}
+    {!!data.issueCount && <span className="wf-node-issue-badge" title={`${data.issueCount} ${data.issueCount === 1 ? "issue" : "issues"}`}>{data.issueCount}</span>}
     <span className="wf-node-type">{data.nodeType}</span>
     <strong className="wf-node-label">{data.label}</strong>
     <small className="wf-node-summary">{data.summary}</small>
@@ -86,13 +87,15 @@ function Designer({ initialWorkflow }: { initialWorkflow: WorkflowDetail }) {
   const [edges, setEdges] = useState<Edge[]>(initial.edges);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [revision, setRevision] = useState(draft.draftRevision);
+  // Completeness issues are computed by the server for the last saved graph.
+  const [issues, setIssues] = useState<WorkflowIssue[]>(draft.issues ?? []);
   const [forms, setForms] = useState<FormOption[]>([]);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [failed, setFailed] = useState(false);
   const canvas = useRef<HTMLDivElement>(null);
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, fitView } = useReactFlow();
   const selected = nodes.find(node => node.id === selectedId);
   const hasStart = nodes.some(node => node.data.nodeType === "Start");
 
@@ -175,18 +178,41 @@ function Designer({ initialWorkflow }: { initialWorkflow: WorkflowDetail }) {
     };
     try {
       const saved = await apiRequest<WorkflowDetail>(`/api/workflows/${initialWorkflow.id}/draft`, { method: "PUT", body: JSON.stringify({ graph, draftRevision: revision }) });
-      setRevision(saved.draft!.draftRevision); setDirty(false); setMessage("Draft saved.");
+      setRevision(saved.draft!.draftRevision); setIssues(saved.draft!.issues ?? []); setDirty(false); setMessage("Draft saved.");
     } catch (error) { setFailed(true); setMessage(error instanceof Error ? error.message : "Unable to save the workflow."); }
     finally { setBusy(false); }
   }
 
-  const displayNodes = nodes.map(node => ({ ...node, data: { ...node.data, summary: summary(node.data, forms) } }));
+  // Select and centre the node an issue refers to.
+  function focusNode(nodeId: string) {
+    if (!nodes.some(node => node.id === nodeId)) return;
+    setNodes(current => current.map(node => ({ ...node, selected: node.id === nodeId })));
+    setSelectedId(nodeId);
+    void fitView({ nodes: [{ id: nodeId }], duration: 300, maxZoom: 1 });
+  }
+
+  const issuesByNode = issues.reduce<Record<string, number>>((counts, issue) => {
+    if (issue.nodeId) counts[issue.nodeId] = (counts[issue.nodeId] ?? 0) + 1;
+    return counts;
+  }, {});
+  const displayNodes = nodes.map(node => ({ ...node, data: { ...node.data, summary: summary(node.data, forms), issueCount: issuesByNode[node.id] ?? 0 } }));
   const config = selected?.data.config ?? {};
   return <section className="panel-card">
     <div className="panel-header"><div><span className="panel-kicker">Draft version {draft.versionNumber}</span><h2>{initialWorkflow.name}</h2>
       <p>{dirty ? "Unsaved changes" : "All changes saved"}. Drag nodes from the palette, connect outputs to inputs, and select a node to configure it.</p></div>
       <div className="designer-actions"><button type="button" className="btn btn-primary" disabled={busy || !dirty} onClick={save}>{busy ? "Saving…" : "Save draft"}</button></div></div>
     {message && <p className="notice" role={failed ? "alert" : "status"}>{message}</p>}
+    <div className={`wf-issues ${issues.length ? "" : "wf-issues-clear"}`} aria-live="polite">
+      <div className="wf-issues-header">
+        <strong>{issues.length ? `${issues.length} ${issues.length === 1 ? "issue" : "issues"} to resolve` : "No issues: this draft is complete."}</strong>
+        <small className="helper">{dirty ? "Showing the last saved check. Save the draft to re-check." : issues.length ? "Drafts with issues can be saved; publishing (Phase 4) will require none." : "It will be ready to publish when publishing arrives in Phase 4."}</small>
+      </div>
+      {issues.length > 0 && <ul>{issues.map((issue, index) => <li key={`${issue.code}-${issue.nodeId ?? "workflow"}-${index}`}>
+        {issue.nodeId && nodes.some(node => node.id === issue.nodeId)
+          ? <button type="button" className="wf-issue-link" onClick={() => focusNode(issue.nodeId!)}>{issue.message}</button>
+          : <span>{issue.message}</span>}
+      </li>)}</ul>}
+    </div>
     <div className="wf-designer">
       <div className="designer-palette" aria-label="Add nodes"><h3>Add node</h3>
         {nodeTypeOrder.map(type => <button key={type} type="button" className="btn wf-palette-item" draggable={!(type === "Start" && hasStart)} disabled={busy || (type === "Start" && hasStart)}

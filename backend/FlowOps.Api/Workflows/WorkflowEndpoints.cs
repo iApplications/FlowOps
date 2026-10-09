@@ -44,17 +44,23 @@ public static class WorkflowEndpoints
 
     private static async Task<IResult> List(HttpContext context, FlowOpsDbContext db)
     {
-        var organizationId = AuthEndpoints.CurrentSession(context)!.ActiveOrganizationId;
-        var rows = await db.WorkflowDefinitions.AsNoTracking().Where(x => x.OrganizationId == organizationId)
+        var organizationId = AuthEndpoints.CurrentSession(context)!.ActiveOrganizationId!.Value;
+        var workflows = await db.WorkflowDefinitions.AsNoTracking().Where(x => x.OrganizationId == organizationId)
             .OrderBy(x => x.Name)
             .Select(x => new
             {
                 x.Id, x.Name, x.Description, x.Revision, x.CreatedAt, x.UpdatedAt,
-                DraftVersionNumber = db.WorkflowVersions.Where(v => v.WorkflowDefinitionId == x.Id && v.Status == WorkflowVersionStatus.Draft)
-                    .Select(v => (int?)v.VersionNumber).FirstOrDefault(),
                 PublishedVersions = db.WorkflowVersions.Count(v => v.WorkflowDefinitionId == x.Id && v.Status == WorkflowVersionStatus.Published)
             }).ToListAsync();
-        return Results.Ok(rows);
+        var drafts = (await db.WorkflowVersions.AsNoTracking().Where(x => x.OrganizationId == organizationId && x.Status == WorkflowVersionStatus.Draft).ToListAsync())
+            .ToDictionary(x => x.WorkflowDefinitionId);
+        var forms = await FormStates(db, organizationId, drafts.Values.SelectMany(x => x.Graph.Nodes));
+        return Results.Ok(workflows.Select(x => new
+        {
+            x.Id, x.Name, x.Description, x.Revision, x.CreatedAt, x.UpdatedAt, x.PublishedVersions,
+            DraftVersionNumber = drafts.TryGetValue(x.Id, out var draft) ? draft.VersionNumber : (int?)null,
+            IssueCount = draft is null ? (int?)null : WorkflowGraphCompleteness.Issues(draft.Graph, forms).Count
+        }));
     }
 
     private static async Task<IResult> Get(Guid workflowId, HttpContext context, FlowOpsDbContext db)
@@ -102,11 +108,23 @@ public static class WorkflowEndpoints
         var draft = await db.WorkflowVersions.AsNoTracking()
             .SingleOrDefaultAsync(x => x.WorkflowDefinitionId == workflow.Id && x.OrganizationId == workflow.OrganizationId && x.Status == WorkflowVersionStatus.Draft);
         var publishedVersions = await db.WorkflowVersions.CountAsync(x => x.WorkflowDefinitionId == workflow.Id && x.Status == WorkflowVersionStatus.Published);
+        var graph = draft?.Graph;
+        var issues = graph is null ? new List<WorkflowIssue>() : WorkflowGraphCompleteness.Issues(graph, await FormStates(db, workflow.OrganizationId, graph.Nodes));
         return new
         {
             workflow.Id, workflow.Name, workflow.Description, workflow.Revision, workflow.CreatedAt, workflow.UpdatedAt, PublishedVersions = publishedVersions,
-            Draft = draft is null ? null : new { draft.Id, draft.VersionNumber, draft.Status, draft.DraftRevision, draft.Graph, draft.UpdatedAt }
+            Draft = draft is null ? null : new { draft.Id, draft.VersionNumber, draft.Status, draft.DraftRevision, Graph = graph, Issues = issues, draft.UpdatedAt }
         };
+    }
+
+    // Name and published state of the organization's forms referenced by Start triggers.
+    private static async Task<Dictionary<Guid, (string Name, bool Published)>> FormStates(FlowOpsDbContext db, Guid organizationId, IEnumerable<WorkflowNode> nodes)
+    {
+        var formIds = nodes.Select(x => x.Config?.FormId).OfType<Guid>().Distinct().ToList();
+        if (formIds.Count == 0) return new();
+        var forms = await db.Forms.AsNoTracking().Where(x => x.OrganizationId == organizationId && formIds.Contains(x.Id))
+            .Select(x => new { x.Id, x.Name, x.PublicationCount }).ToListAsync();
+        return forms.ToDictionary(x => x.Id, x => (x.Name, x.PublicationCount > 0));
     }
 
     private static string? Validate(WorkflowDetails request)
