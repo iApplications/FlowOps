@@ -99,7 +99,7 @@ GET  /api/workflows               List definitions in the active organization
 POST /api/workflows               Create a definition and Draft v1
 GET  /api/workflows/{id}          Definition, draft version, graph, revision, issues
 PUT  /api/workflows/{id}          Edit name/description (revision required)
-PUT  /api/workflows/{id}/draft    Save the draft graph (draftRevision required)   [slice 2]
+PUT  /api/workflows/{id}/draft    Save the draft graph (draftRevision required)
 ```
 
 Audit events: `workflow.created`, `workflow.updated`, `workflow.draft_saved`.
@@ -107,8 +107,8 @@ Audit events: `workflow.created`, `workflow.updated`, `workflow.draft_saved`.
 ## Delivery sequence
 
 1. **Foundation:** model and `WorkflowDesigner` migration, the Published-version guard, list/create/detail/rename API, the Studio Workflows list and navigation, audit events, tests.
-2. **Canvas:** React Flow designer at `/workflows/{id}`, saving the graph with revision checks, structural validation, a configuration panel for all four node types, an unsaved-changes guard, tests.
-3. **Validation:** the expression parser, completeness issues, an issues panel with node highlighting, the Start form trigger, tests.
+2. **Canvas:** React Flow designer at `/workflows/{id}`, saving the graph with revision checks, structural validation, a configuration panel for all four node types (including the Start form trigger), an unsaved-changes guard, tests.
+3. **Validation:** the expression parser, completeness issues (including a Start form that has no published version yet), an issues panel with node highlighting, tests.
 4. **Acceptance:**
    - this document's checklists and the API acceptance script extended to workflows
    - ARCHITECTURE notes on the graph format and expression grammar
@@ -117,15 +117,24 @@ Audit events: `workflow.created`, `workflow.updated`, `workflow.draft_saved`.
 
 ## Current implementation
 
-Slice 1 (foundation) is implemented on `feat/phase3-workflow-foundation`; automated and browser checks passed on 2026-10-08. It includes:
+Slice 1 (foundation) was merged into `dev/phase3_main` (#14). It includes:
 
-- the `WorkflowDesigner` migration (applied to the local development database)
+- the `WorkflowDesigner` migration
 - the Published-version guard
 - `GET/POST /api/workflows` and `GET/PUT /api/workflows/{id}`
 - the Studio **Workflows** list and navigation
 - audit events
 
-The canvas and validation follow in slices 2 and 3. See [Progress](PROGRESS.md) for status.
+Slice 2 (canvas) is implemented on `feat/phase3-workflow-canvas` and awaits internal browser checks. It includes:
+
+- `PUT /api/workflows/{id}/draft` with structural validation and revision checks
+- the React Flow designer at `/workflows/{id}`, opened from the Workflows list
+- node settings for all four types, including the Start form trigger
+- an unsaved-changes guard
+
+React Flow (`@xyflow/react` 12.12.0, MIT, pinned) has its own entry point, `@flowops/ui/workflow-designer`, so it is bundled only into Studio's designer page; Portal does not include it. Saving a graph changes only the draft version, so a rename in another tab never blocks a graph save, and vice versa.
+
+Completeness validation and the expression parser follow in slice 3. See [Progress](PROGRESS.md) for status.
 
 ## Internal test: workflow foundation
 
@@ -146,3 +155,36 @@ Automated checks cover:
 - revision conflicts that change nothing
 - tenant isolation and audit events
 - the database guards: Published versions cannot be modified or deleted, and a second Draft per workflow is rejected
+
+## Internal test: workflow canvas
+
+Restart the API and Studio after pulling this slice. It adds a package dependency and a package entry point.
+
+1. Open **Workflows**, select a workflow and click **Open designer**. Draft v1 shows the Start → End starter graph.
+2. Add one node of each type by dragging it from the palette, and add another by clicking. A second Start cannot be added while one exists.
+3. Connect outputs to inputs. Condition shows `true`/`false` outputs and Approval shows `approved`/`rejected`. The designer refuses to:
+   - connect a node to itself
+   - connect into Start
+   - use the same output twice
+4. Select each node and edit its settings:
+   - Start: Manual, or **When a form is submitted** with a form
+   - Condition: expression
+   - Approval: approver role and instructions
+   - End: outcome
+
+   The node card updates as you type.
+5. Move nodes, delete a node and a connection with Delete/Backspace, then **Save draft**. Refresh: positions, connections, labels and settings persist.
+6. Edit without saving and click **Back to Workflows**: the unsaved-changes warning appears, and staying keeps the edits.
+7. Open the designer in two tabs. Save in one, then in the other: the second save is rejected with "This draft changed in another session. Reload it before saving."
+8. Rename the workflow from the list in another tab while the designer is open. Saving the graph still succeeds.
+9. A Portal account cannot open the designer or call the draft API. Another organization's workflow URL shows "This workflow is not in your active organization."
+
+Automated checks cover:
+
+- saving a baseline Expense Approval graph with an unconnected condition
+- trimmed labels
+- stale and missing draft revisions
+- renames that do not block graph saves
+- 19 structural rejection cases, with the draft unchanged
+- forms from another organization
+- Portal denial and `workflow.draft_saved` audit events
