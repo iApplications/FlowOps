@@ -1053,6 +1053,295 @@ public sealed class SecurityTests : IAsyncLifetime
         Assert.Equal(enabled ? HttpStatusCode.Unauthorized : HttpStatusCode.TooManyRequests, await Login("203.0.113.2"));
     }
 
+    [Fact]
+    public async Task Workflows_require_studio_mfa_stay_in_the_active_organization_and_check_revisions()
+    {
+        using var studio = NewClient();
+        using var portal = NewClient();
+        await RegisterAndLogin(studio, "workflow-owner@example.test");
+        await RegisterAndLogin(portal, "workflow-member@example.test", "Portal");
+        var organization = await CreateOrganization(studio, "Workflow Workspace");
+        Assert.Equal(HttpStatusCode.Forbidden, (await studio.GetAsync("/api/workflows")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(studio, HttpMethod.Post, "/api/workflows", new { name = "Before MFA" })).StatusCode);
+        var setup = await studio.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+        await Mutate(studio, HttpMethod.Post, "/api/auth/mfa/enable", new { code = AuthenticatorCode(setup.GetProperty("sharedKey").GetString()!) });
+
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Post, "/api/workflows", new { name = " " })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Post, "/api/workflows", new { name = "Expense approval" }, addCsrf: false)).StatusCode);
+        var created = await Mutate(studio, HttpMethod.Post, "/api/workflows", new { name = " Expense approval ", description = "Manager approval" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var workflow = await created.Content.ReadFromJsonAsync<JsonElement>();
+        var workflowId = workflow.GetProperty("id").GetGuid();
+        Assert.Equal("Expense approval", workflow.GetProperty("name").GetString());
+        Assert.Equal(0, workflow.GetProperty("revision").GetInt32());
+        Assert.Equal(0, workflow.GetProperty("publishedVersions").GetInt32());
+        // Every new workflow starts with Draft v1 holding a connected Start → End graph.
+        var draft = workflow.GetProperty("draft");
+        Assert.Equal(1, draft.GetProperty("versionNumber").GetInt32());
+        Assert.Equal("Draft", draft.GetProperty("status").GetString());
+        Assert.Equal(0, draft.GetProperty("draftRevision").GetInt32());
+        var graph = draft.GetProperty("graph");
+        Assert.Equal(1, graph.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(["Start", "End"], graph.GetProperty("nodes").EnumerateArray().Select(x => x.GetProperty("type").GetString()));
+        Assert.Equal("Manual", graph.GetProperty("nodes")[0].GetProperty("config").GetProperty("trigger").GetString());
+        var connection = Assert.Single(graph.GetProperty("connections").EnumerateArray());
+        Assert.Equal(("start", "next", "end"), (connection.GetProperty("source").GetString(), connection.GetProperty("sourceHandle").GetString(), connection.GetProperty("target").GetString()));
+        Assert.Empty(draft.GetProperty("issues").EnumerateArray());
+        var listed = Assert.Single((await studio.GetFromJsonAsync<JsonElement>("/api/workflows")).EnumerateArray());
+        Assert.Equal(1, listed.GetProperty("draftVersionNumber").GetInt32());
+        Assert.Equal(0, listed.GetProperty("issueCount").GetInt32());
+
+        // Metadata edits must name the revision they were made against; stale revisions change nothing.
+        var path = $"/api/workflows/{workflowId}";
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Put, path, new { name = "No revision" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(studio, HttpMethod.Put, path, new { name = "Stale", revision = 5 })).StatusCode);
+        Assert.Equal("Expense approval", (await studio.GetFromJsonAsync<JsonElement>(path)).GetProperty("name").GetString());
+        var renamed = await Mutate(studio, HttpMethod.Put, path, new { name = "Expense approval v1", description = "Updated", revision = 0 });
+        Assert.Equal(HttpStatusCode.OK, renamed.StatusCode);
+        Assert.Equal(1, (await renamed.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("revision").GetInt32());
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(studio, HttpMethod.Put, path, new { name = "Second tab", revision = 0 })).StatusCode);
+
+        // Portal accounts never reach workflow design, even as members of the organization.
+        Assert.Equal(HttpStatusCode.Created, (await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/members",
+            new { email = "workflow-member@example.test", role = "Member" })).StatusCode);
+        await Mutate(portal, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        Assert.Equal(HttpStatusCode.Forbidden, (await portal.GetAsync("/api/workflows")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await portal.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(portal, HttpMethod.Put, path, new { name = "Portal edit", revision = 1 })).StatusCode);
+        using var anonymous = NewClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/workflows")).StatusCode);
+
+        // Another organization cannot see or change the workflow by ID.
+        var other = await CreateOrganization(studio, "Other Workflow Workspace");
+        Assert.Empty((await studio.GetFromJsonAsync<JsonElement>("/api/workflows")).EnumerateArray());
+        Assert.Equal(HttpStatusCode.NotFound, (await studio.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Mutate(studio, HttpMethod.Put, path, new { name = "Cross organization", revision = 1 })).StatusCode);
+        await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        Assert.Equal("Expense approval v1", (await studio.GetFromJsonAsync<JsonElement>(path)).GetProperty("name").GetString());
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        Assert.True(await db.AuditEvents.AnyAsync(x => x.Action == "workflow.created" && x.SubjectId == workflowId.ToString() && x.OrganizationId == organization));
+        Assert.Equal(1, await db.AuditEvents.CountAsync(x => x.Action == "workflow.updated" && x.SubjectId == workflowId.ToString()));
+        Assert.False(await db.WorkflowDefinitions.AnyAsync(x => x.OrganizationId == other));
+    }
+
+    private static object Node(string id, string type, string label, object? config = null, double x = 0, double y = 0) =>
+        new { id, type, label, position = new { x, y }, config };
+    private static object Link(string id, string source, string sourceHandle, string target) => new { id, source, sourceHandle, target };
+
+    [Fact]
+    public async Task Workflow_drafts_save_graphs_with_revision_checks_and_structural_validation()
+    {
+        using var studio = NewClient();
+        using var portal = NewClient();
+        await RegisterAndLogin(studio, "workflow-graph-owner@example.test");
+        await RegisterAndLogin(portal, "workflow-graph-member@example.test", "Portal");
+        var organization = await CreateOrganization(studio, "Workflow Graph Workspace");
+        var setup = await studio.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+        await Mutate(studio, HttpMethod.Post, "/api/auth/mfa/enable", new { code = AuthenticatorCode(setup.GetProperty("sharedKey").GetString()!) });
+        var formId = (await (await Mutate(studio, HttpMethod.Post, "/api/forms", new { name = "Expense claim" })).Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var created = await Mutate(studio, HttpMethod.Post, "/api/workflows", new { name = "Expense approval" });
+        var workflowId = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var draftPath = $"/api/workflows/{workflowId}/draft";
+        var revision = 0;
+        async Task<HttpResponseMessage> Save(object[] nodes, object[] connections, int? draftRevision = -1, int schemaVersion = 1) =>
+            await Mutate(studio, HttpMethod.Put, draftPath, new { graph = new { schemaVersion, nodes, connections }, draftRevision = draftRevision == -1 ? revision : draftRevision });
+
+        // A baseline Expense Approval draft plus an unconnected condition: incomplete drafts are saved.
+        object[] nodes = [
+            Node("start", "Start", "  Employee submits  ", new { trigger = "FormSubmitted", formId }),
+            Node("manager", "Approval", "Manager approval", new { assigneeRole = "Admin", instructions = "Check the receipt." }, 300),
+            Node("approved", "End", "Approved", new { outcome = "Approved" }, 600, -80),
+            Node("rejected", "End", "Rejected", new { outcome = "Rejected" }, 600, 80),
+            Node("threshold", "Condition", "Over RM500?", new { expression = "request.amount >= 500" }, 300, 200)];
+        object[] links = [Link("c1", "start", "next", "manager"), Link("c2", "manager", "approved", "approved"), Link("c3", "manager", "rejected", "rejected")];
+        var saved = await Save(nodes, links);
+        Assert.True(saved.StatusCode == HttpStatusCode.OK, await saved.Content.ReadAsStringAsync());
+        var draft = (await saved.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("draft");
+        Assert.Equal(1, draft.GetProperty("draftRevision").GetInt32());
+        Assert.Equal("Employee submits", draft.GetProperty("graph").GetProperty("nodes")[0].GetProperty("label").GetString());
+        Assert.Equal(formId, draft.GetProperty("graph").GetProperty("nodes")[0].GetProperty("config").GetProperty("formId").GetGuid());
+        Assert.Equal(3, draft.GetProperty("graph").GetProperty("connections").GetArrayLength());
+        // Incomplete drafts save, and the response lists what is missing with the node it concerns.
+        var issues = draft.GetProperty("issues").EnumerateArray().Select(x => (x.GetProperty("code").GetString(), x.GetProperty("nodeId").GetString())).ToList();
+        Assert.Equal([("form_unpublished", "start"), ("output_unconnected", "threshold"), ("output_unconnected", "threshold"), ("unreachable", "threshold")],
+            issues.OrderBy(x => x.Item1, StringComparer.Ordinal).ToList());
+        Assert.Equal(4, Assert.Single((await studio.GetFromJsonAsync<JsonElement>("/api/workflows")).EnumerateArray()).GetProperty("issueCount").GetInt32());
+        revision = 1;
+
+        // Stale or missing draft revisions change nothing; renames and graph saves do not block each other.
+        Assert.Equal(HttpStatusCode.Conflict, (await Save(nodes, links, draftRevision: 0)).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Save(nodes, links, draftRevision: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"/api/workflows/{workflowId}", new { name = "Expense approval", revision = 0 })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Save(nodes, links)).StatusCode);
+        revision = 2;
+
+        // Structural violations reject the save without changing the draft.
+        var invalid = new (string Case, object[] Nodes, object[] Links, int Schema)[]
+        {
+            ("unknown type", [Node("start", "Script", "Run code")], [], 1),
+            ("duplicate node ID", [Node("a", "End", "One"), Node("a", "End", "Two")], [], 1),
+            ("invalid node ID", [Node("a b", "End", "Spaces")], [], 1),
+            ("blank label", [Node("a", "End", " ")], [], 1),
+            ("long label", [Node("a", "End", new string('x', 81))], [], 1),
+            ("position out of range", [Node("a", "End", "Far", x: 2_000_000)], [], 1),
+            ("too many nodes", Enumerable.Range(0, 101).Select(i => Node($"n{i}", "End", $"End {i}")).ToArray(), [], 1),
+            ("unsupported schema", nodes, links, 2),
+            ("self connection", [Node("c", "Condition", "Loop", new { expression = "a" })], [Link("x", "c", "true", "c")], 1),
+            ("missing target", [Node("s", "Start", "Start", new { trigger = "Manual" })], [Link("x", "s", "next", "nowhere")], 1),
+            ("unknown output", [Node("c", "Condition", "Check", new { expression = "a" }), Node("e", "End", "End")], [Link("x", "c", "maybe", "e")], 1),
+            ("End output", [Node("e", "End", "End"), Node("f", "End", "Other")], [Link("x", "e", "next", "f")], 1),
+            ("output used twice", [Node("a", "Approval", "Approve", new { assigneeRole = "Admin" }), Node("e", "End", "One"), Node("f", "End", "Two")],
+                [Link("x", "a", "approved", "e"), Link("y", "a", "approved", "f")], 1),
+            ("missing trigger", [Node("s", "Start", "Start")], [], 1),
+            ("manual trigger with form", [Node("s", "Start", "Start", new { trigger = "Manual", formId })], [], 1),
+            ("unknown form", [Node("s", "Start", "Start", new { trigger = "FormSubmitted", formId = Guid.NewGuid() })], [], 1),
+            ("invalid assignee", [Node("a", "Approval", "Approve", new { assigneeRole = "Superuser" })], [], 1),
+            ("settings from another type", [Node("c", "Condition", "Check", new { expression = "a", assigneeRole = "Admin" })], [], 1),
+            ("long expression", [Node("c", "Condition", "Check", new { expression = new string('a', 501) })], [], 1),
+        };
+        foreach (var (name, caseNodes, caseLinks, schema) in invalid)
+        {
+            var response = await Save(caseNodes, caseLinks, schemaVersion: schema);
+            Assert.True(response.StatusCode == HttpStatusCode.BadRequest, $"{name}: {response.StatusCode}");
+        }
+        Assert.Equal(2, (await studio.GetFromJsonAsync<JsonElement>($"/api/workflows/{workflowId}")).GetProperty("draft").GetProperty("draftRevision").GetInt32());
+
+        // A form from another organization cannot be referenced, even by a valid ID.
+        var other = await CreateOrganization(studio, "Other Graph Workspace");
+        var otherFormId = (await (await Mutate(studio, HttpMethod.Post, "/api/forms", new { name = "Other form" })).Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        Assert.Equal(HttpStatusCode.NotFound, (await Save(nodes, links)).StatusCode);
+        await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        Assert.Equal(HttpStatusCode.BadRequest, (await Save([Node("s", "Start", "Start", new { trigger = "FormSubmitted", formId = otherFormId })], [])).StatusCode);
+
+        // Portal members cannot save drafts.
+        await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/members", new { email = "workflow-graph-member@example.test", role = "Member" });
+        await Mutate(portal, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(portal, HttpMethod.Put, draftPath, new { graph = new { schemaVersion = 1, nodes, connections = links }, draftRevision = revision })).StatusCode);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        Assert.Equal(2, await db.AuditEvents.CountAsync(x => x.Action == "workflow.draft_saved" && x.SubjectId == workflowId.ToString()));
+        Assert.False(await db.WorkflowDefinitions.AnyAsync(x => x.OrganizationId == other));
+    }
+
+    [Theory]
+    [InlineData("request.amount >= 500")]
+    [InlineData("request.amount >= 500 && request.amount <= 5000")]
+    [InlineData("!(approval.managerApproved == true) || request.category == \"Travel\"")]
+    [InlineData("request.currency != 'MYR' && request.total > -0.5")]
+    [InlineData("((a))")]
+    [InlineData("flagged")]
+    [InlineData("name == 'It\\'s fine'")]
+    public void Condition_expressions_accept_the_controlled_grammar(string expression) =>
+        Assert.Null(FlowOps.Api.Workflows.WorkflowExpression.Validate(expression));
+
+    [Theory]
+    [InlineData("", "Enter an expression")]
+    [InlineData("request.amount >=", "ends too early")]
+    [InlineData("request.amount = 500", "Use ==")]
+    [InlineData("a & b", "Use &&")]
+    [InlineData("System.IO.File.Delete('x')", "Function calls are not allowed")]
+    [InlineData("eval('1')", "Function calls are not allowed")]
+    [InlineData("items[0] == 1", "Unsupported character '['")]
+    [InlineData("a == 1; DROP TABLE Forms", "Unsupported character ';'")]
+    [InlineData("'unterminated", "missing its closing quote")]
+    [InlineData("a == 'x\\n'", "Unsupported escape")]
+    [InlineData("1 < a < 3", "Combine comparisons")]
+    [InlineData("(a == 1", "missing its closing ')'")]
+    [InlineData("request.", "Expected a name after '.'")]
+    [InlineData("1.5.2 == a", "Unexpected '.'")]
+    [InlineData("a == 1 b", "Unexpected 'b'")]
+    [InlineData("`whoami`", "Unsupported character '`'")]
+    [InlineData("$(rm -rf /)", "Unsupported character '$'")]
+    public void Condition_expressions_reject_code_and_malformed_syntax(string expression, string expected)
+    {
+        var error = FlowOps.Api.Workflows.WorkflowExpression.Validate(expression);
+        Assert.NotNull(error);
+        Assert.Contains(expected, error);
+    }
+
+    [Fact]
+    public void Condition_expressions_limit_nesting_and_length()
+    {
+        Assert.Contains("nested too deeply", FlowOps.Api.Workflows.WorkflowExpression.Validate(new string('(', 40) + "a" + new string(')', 40)));
+        Assert.Contains("nested too deeply", FlowOps.Api.Workflows.WorkflowExpression.Validate(new string('!', 40) + "a"));
+        Assert.Contains("at most", FlowOps.Api.Workflows.WorkflowExpression.Validate(string.Join(" && ", Enumerable.Repeat("a == 1", 60))));
+    }
+
+    [Fact]
+    public void Workflow_completeness_reports_missing_structure_with_affected_nodes()
+    {
+        static FlowOps.Api.Workflows.WorkflowNode N(string id, string type, FlowOps.Api.Workflows.WorkflowNodeConfig? config = null) =>
+            new(id, type, id, new(0, 0), config ?? new());
+        static FlowOps.Api.Workflows.WorkflowConnection C(string source, string handle, string target) => new($"{source}-{handle}", source, handle, target);
+        List<(string Code, string? Node)> Issues(List<FlowOps.Api.Workflows.WorkflowNode> nodes, List<FlowOps.Api.Workflows.WorkflowConnection> links,
+            Dictionary<Guid, (string, bool)>? forms = null) =>
+            FlowOps.Api.Workflows.WorkflowGraphCompleteness.Issues(new(1, nodes, links), forms ?? []).Select(x => (x.Code, x.NodeId)).OrderBy(x => x.Code).ThenBy(x => x.NodeId).ToList();
+        var manual = new FlowOps.Api.Workflows.WorkflowNodeConfig(Trigger: "Manual");
+
+        // The Phase 5 baseline Expense Approval flow is complete.
+        Assert.Empty(Issues([N("s", "Start", manual), N("a", "Approval", new(AssigneeRole: "Admin")), N("yes", "End"), N("no", "End")],
+            [C("s", "next", "a"), C("a", "approved", "yes"), C("a", "rejected", "no")]));
+        Assert.Equal([("end_missing", null), ("start_missing", null)], Issues([], []));
+        // With several Starts, reachability is not evaluated until exactly one remains.
+        Assert.Equal([("start_multiple", "s2")], Issues([N("s1", "Start", manual), N("s2", "Start", manual), N("e", "End")],
+            [C("s1", "next", "e"), C("s2", "next", "e")]));
+        Assert.Equal([("output_unconnected", "c"), ("unreachable", "c")], Issues([N("s", "Start", manual), N("e", "End"), N("c", "Condition", new(Expression: "a == 1"))],
+            [C("s", "next", "e"), C("c", "true", "e")]));
+        Assert.Equal([("expression_invalid", "c")], Issues([N("s", "Start", manual), N("c", "Condition", new(Expression: "a =")), N("e", "End")],
+            [C("s", "next", "c"), C("c", "true", "e"), C("c", "false", "e")]));
+        Assert.Equal([("start_incoming", "s")], Issues([N("s", "Start", manual), N("a", "Approval", new(AssigneeRole: "Admin")), N("e", "End")],
+            [C("s", "next", "a"), C("a", "approved", "e"), C("a", "rejected", "s")]).Where(x => x.Code == "start_incoming").ToList());
+        // A loop is reported once, and nodes stuck in it have no path to an End.
+        var looped = Issues([N("s", "Start", manual), N("a", "Approval", new(AssigneeRole: "Admin")), N("b", "Approval", new(AssigneeRole: "Owner")), N("e", "End")],
+            [C("s", "next", "a"), C("a", "approved", "b"), C("a", "rejected", "e"), C("b", "approved", "a"), C("b", "rejected", "e")]);
+        Assert.Equal([("cycle", "a")], looped);
+        Assert.Equal([("no_path_to_end", "a"), ("no_path_to_end", "b"), ("no_path_to_end", "s")],
+            Issues([N("s", "Start", manual), N("a", "Condition", new(Expression: "x")), N("b", "Condition", new(Expression: "y")), N("e", "End")],
+                [C("s", "next", "a"), C("a", "true", "b"), C("a", "false", "b"), C("b", "true", "a"), C("b", "false", "a")]).Where(x => x.Code == "no_path_to_end").ToList());
+        var formId = Guid.NewGuid();
+        var formStart = N("s", "Start", new(Trigger: "FormSubmitted", FormId: formId));
+        Assert.Equal([("form_unpublished", "s")], Issues([formStart, N("e", "End")], [C("s", "next", "e")], new() { [formId] = ("Expense claim", false) }));
+        Assert.Empty(Issues([formStart, N("e", "End")], [C("s", "next", "e")], new() { [formId] = ("Expense claim", true) }));
+    }
+
+    [Fact]
+    public async Task Published_workflow_versions_are_immutable_and_each_workflow_has_one_draft()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        var organization = new Organization { Name = "Versioned Workflows" };
+        var workflow = new FlowOps.Api.Workflows.WorkflowDefinition { OrganizationId = organization.Id, Name = "Expense approval" };
+        var published = new FlowOps.Api.Workflows.WorkflowVersion { WorkflowDefinitionId = workflow.Id, OrganizationId = organization.Id, VersionNumber = 1,
+            Status = FlowOps.Api.Workflows.WorkflowVersionStatus.Published, PublishedAt = DateTimeOffset.UtcNow,
+            GraphJson = JsonSerializer.Serialize(FlowOps.Api.Workflows.WorkflowGraph.Starter()) };
+        var draft = new FlowOps.Api.Workflows.WorkflowVersion { WorkflowDefinitionId = workflow.Id, OrganizationId = organization.Id, VersionNumber = 2,
+            GraphJson = published.GraphJson };
+        db.AddRange(organization, workflow, published, draft);
+        await db.SaveChangesAsync();
+
+        // Drafts stay editable.
+        draft.GraphJson = JsonSerializer.Serialize(FlowOps.Api.Workflows.WorkflowGraph.Empty);
+        draft.DraftRevision++;
+        await db.SaveChangesAsync();
+
+        published.GraphJson = "{}";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
+        db.Entry(published).State = EntityState.Unchanged;
+        published.Status = FlowOps.Api.Workflows.WorkflowVersionStatus.Draft;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
+        db.Entry(published).Reload();
+        db.Remove(published);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
+        db.Entry(published).State = EntityState.Unchanged;
+
+        // The database also refuses a second editable draft for the same workflow.
+        db.Add(new FlowOps.Api.Workflows.WorkflowVersion { WorkflowDefinitionId = workflow.Id, OrganizationId = organization.Id, VersionNumber = 3 });
+        await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+    }
+
     // Test requests have no peer address; present them as coming from a co-located (loopback) proxy.
     private sealed class LoopbackPeer : IStartupFilter
     {

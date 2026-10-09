@@ -4,14 +4,17 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.tsx"
+    ".": "./src/index.tsx",
+    "./workflow-designer": "./src/workflow-designer.tsx"
   },
   "peerDependencies": {
-    "react": "^19.0.0"
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   },
   "dependencies": {
     "@flowops/api-client": "*",
     "@flowops/types": "*",
+    "@xyflow/react": "12.12.0",
     "qrcode.react": "^4.2.0"
   },
   "devDependencies": {

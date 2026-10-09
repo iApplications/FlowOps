@@ -34,11 +34,18 @@ export function AuthFrame({ surface, title, intro, children }: {
   </main>;
 }
 
+type StudioSection = "overview" | "forms" | "workflows";
+const studioHeadings: Record<StudioSection, { eyebrow: string; title: string; description: string }> = {
+  overview: { eyebrow: "Organization foundation", title: "Workspace overview", description: "Manage access, people, and account security from one place." },
+  forms: { eyebrow: "Form builder", title: "Forms", description: "Manage draft forms for your active organization." },
+  workflows: { eyebrow: "Workflow designer", title: "Workflows", description: "Design draft workflows for your active organization." },
+};
+
 export function DashboardShell({ surface, user, children, section = "overview" }: {
   surface: "Studio" | "Portal";
   user: CurrentUser;
   children: ReactNode;
-  section?: "overview" | "forms";
+  section?: StudioSection;
 }) {
   const active = user.activeOrganization;
   const name = user.displayName.trim().split(/\s+/)[0] || "there";
@@ -51,6 +58,7 @@ export function DashboardShell({ surface, user, children, section = "overview" }
           <nav className="studio-nav" aria-label="Studio sections">
             <a href="/" aria-current={section === "overview" ? "page" : undefined}><span className="studio-nav-dot" />Overview</a>
             <a href="/forms" aria-current={section === "forms" ? "page" : undefined}><span className="studio-nav-dot" />Forms</a>
+            <a href="/workflows" aria-current={section === "workflows" ? "page" : undefined}><span className="studio-nav-dot" />Workflows</a>
             <a href="/#organizations"><span className="studio-nav-dot" />Organizations</a>
             <a href="/#members"><span className="studio-nav-dot" />People</a>
             <a href="/#security"><span className="studio-nav-dot" />Security</a>
@@ -65,8 +73,8 @@ export function DashboardShell({ surface, user, children, section = "overview" }
         </header>
         <main className="studio-content">
           <div className="dashboard-heading">
-            <div><p className="eyebrow">{section === "forms" ? "Form builder" : "Organization foundation"}</p><h1>{section === "forms" ? "Forms" : "Workspace overview"}</h1><p>{section === "forms" ? "Manage draft forms for your active organization." : "Manage access, people, and account security from one place."}</p></div>
-            <span className="status-chip">Phase 2 · Form foundation</span>
+            <div><p className="eyebrow">{studioHeadings[section].eyebrow}</p><h1>{studioHeadings[section].title}</h1><p>{studioHeadings[section].description}</p></div>
+            <span className="status-chip">Phase 3 · Workflow designer</span>
           </div>
           {section === "overview" && <section className="studio-hero">
             <div><p className="eyebrow">{active ? "Current workspace" : "Get started"}</p>

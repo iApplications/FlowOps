@@ -634,7 +634,7 @@ flowops/
 
 ## Status
 
-**Current stage:** Phase 1 (Authentication & Organizations) and Phase 2 (Form Builder) are complete and merged into main. Phase 3 Workflow Designer is next. See [Progress](docs/PROGRESS.md).
+**Current stage:** Phase 1 (Authentication & Organizations) and Phase 2 (Form Builder) are complete and merged into main. Phase 3 Workflow Designer is implementation complete on `dev/phase3_main`; final acceptance and the merge into main are pending. See [Progress](docs/PROGRESS.md).
 
 Implemented features:
 - **Accounts and organizations:** separate Studio/Portal accounts and sessions, email confirmation and password reset, authenticator MFA and recovery codes, account lockout (including unconfirmed accounts), organization creation and switching, membership management, and server-side organization permissions.
