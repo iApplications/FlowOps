@@ -238,7 +238,7 @@ Each slice passed its own automated and browser checks before merging (#14, #15,
   3. Save. The panel shows no issues and the list shows **Complete**.
   4. Refresh, then rename the workflow. Everything persists.
 - [x] Spot-check a regression of Phase 2 (passed 2026-10-10): create, publish and submit a form in Portal.
-- [ ] Review the docs and approve the PR from `dev/phase3_main` into `main`.
+- [x] Review the docs and approve the PR from `dev/phase3_main` into `main` (merged 2026-10-10, #18).
 
 Roadmap deliverables:
 

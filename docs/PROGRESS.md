@@ -11,7 +11,8 @@ Updated: 2026-10-08
 - Slice 1 (foundation) was merged into `dev/phase3_main` (#14).
 - Slice 2 (canvas) was merged into `dev/phase3_main` (#15).
 - Slice 3 (validation) was merged into `dev/phase3_main` (#16). Phase 3 is **implementation complete**.
-- Remaining: the [final Phase 3 acceptance](PHASE3.md#final-phase-3-acceptance) on the merged branch, then a PR from `dev/phase3_main` into `main`.
+- Phase 3 is **complete**: approved by the user and merged into `main` on 2026-10-10 (#18). The code on `main` is identical to the tested `dev/phase3_main`.
+- Next phase: Phase 4 Workflow Execution Engine + Core Version Identity, on a new integration branch from `main`.
 - No automatic commits or pushes; each merge follows internal testing and user approval.
 
 ## Delivery progress
@@ -31,7 +32,7 @@ Updated: 2026-10-08
 | Phase 3 workflow foundation (slice 1) | Complete: definitions, Draft v1 with Start → End graph, Published-version guard, list/create/rename API, Studio Workflows list | Automated and browser checks passed 2026-10-08; merged into Phase 3 (#14) |
 | Phase 3 workflow canvas (slice 2) | Complete: React Flow designer, draft graph save with structural validation, node settings including the Start form trigger | Automated and browser checks passed 2026-10-09; merged into Phase 3 (#15) |
 | Phase 3 workflow validation (slice 3) | Complete: condition expression parser, completeness issues with node references, designer issues panel and highlighting, list issue counts | Automated and browser checks passed 2026-10-10; merged into Phase 3 (#16) |
-| Phase 3 final acceptance and merge to main | Pending | Automated checks passed on merged `dev/phase3_main` (`6e32790`); browser pass passed 2026-10-10; PR into main pending |
+| Phase 3 final acceptance and merge to main | Complete | Approved by the user and merged into main 2026-10-10 (#18) |
 | Phase 4 and later roadmap phases | Pending | Not started |
 
 ## Phase 2 roadmap deliverables
