@@ -8,7 +8,8 @@ Updated: 2026-10-08
 - Phase 2 integration branch: `dev/Phase2_Form`. All Phase 2 work slices are merged into it: draft library (#6), field designer (#7), publishing (#8), submissions/history/uploads (#9), and code review hardening (#10).
 - Phase 2 is **complete**: the user approved it and merged it into `main` on 2026-10-08 (#12), with the closeout docs (#11). The code on `main` is identical to the tested `dev/Phase2_Form` code (`8c7f447`).
 - Phase 3 integration branch: `dev/phase3_main`, created from `main` (`76cbaa8`). The plan was approved on 2026-10-08 and is recorded in [Phase 3](PHASE3.md).
-- Current work branch: `feat/phase3-workflow-foundation` (slice 1). Automated and browser checks passed on 2026-10-08 (user-reported); PR into `dev/phase3_main` pending.
+- Slice 1 (foundation) was merged into `dev/phase3_main` (#14).
+- Current work branch: `feat/phase3-workflow-canvas` (slice 2). Automated and browser checks passed on 2026-10-09 (user-reported); PR into `dev/phase3_main` pending.
 - No automatic commits or pushes; each merge follows internal testing and user approval.
 
 ## Delivery progress
@@ -25,8 +26,8 @@ Updated: 2026-10-08
 | Phase 2 local file uploads/downloads | Complete: required/optional files, streaming validation, protected downloads | Accepted 2026-10-08; merged into Phase 2 (#9, #10) |
 | Code review hardening (Phase 1 + Phase 2) | Complete | Automated, API and browser acceptance passed 2026-10-08; merged into Phase 2 (#10) |
 | Phase 2 final acceptance and merge to main | Complete | Approved by the user and merged into main 2026-10-08 (#12) |
-| Phase 3 workflow foundation (slice 1) | Complete: definitions, Draft v1 with Start → End graph, Published-version guard, list/create/rename API, Studio Workflows list | Automated and browser checks passed 2026-10-08; PR into Phase 3 pending |
-| Phase 3 workflow canvas (slice 2) | Pending | Not started |
+| Phase 3 workflow foundation (slice 1) | Complete: definitions, Draft v1 with Start → End graph, Published-version guard, list/create/rename API, Studio Workflows list | Automated and browser checks passed 2026-10-08; merged into Phase 3 (#14) |
+| Phase 3 workflow canvas (slice 2) | Complete: React Flow designer, draft graph save with structural validation, node settings including the Start form trigger | Automated and browser checks passed 2026-10-09; PR into Phase 3 pending |
 | Phase 3 workflow validation (slice 3) | Pending | Not started |
 | Phase 4 and later roadmap phases | Pending | Not started |
 

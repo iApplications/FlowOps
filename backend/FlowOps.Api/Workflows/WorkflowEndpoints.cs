@@ -14,6 +14,32 @@ public static class WorkflowEndpoints
         group.MapPost("/", Create);
         group.MapGet("/{workflowId:guid}", Get);
         group.MapPut("/{workflowId:guid}", Update);
+        group.MapPut("/{workflowId:guid}/draft", SaveDraft).WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(512 * 1024));
+    }
+
+    private static async Task<IResult> SaveDraft(Guid workflowId, SaveDraftRequest request, HttpContext context, FlowOpsDbContext db)
+    {
+        var session = AuthEndpoints.CurrentSession(context)!;
+        var workflow = await db.WorkflowDefinitions.SingleOrDefaultAsync(x => x.Id == workflowId && x.OrganizationId == session.ActiveOrganizationId);
+        if (workflow is null) return NotFound();
+        var draft = await db.WorkflowVersions.SingleOrDefaultAsync(x => x.WorkflowDefinitionId == workflow.Id && x.OrganizationId == workflow.OrganizationId && x.Status == WorkflowVersionStatus.Draft);
+        if (draft is null) return Results.Conflict(new { error = "This workflow has no editable draft." });
+        if (request.DraftRevision is null) return Results.BadRequest(new { error = "Provide the draft revision you are editing." });
+        if (request.DraftRevision != draft.DraftRevision) return Results.Conflict(new { error = "This draft changed in another session. Reload it before saving." });
+        // Form triggers may only reference forms of this organization; load the referenced IDs in one query.
+        var referencedForms = request.Graph?.Nodes?.Select(x => x?.Config?.FormId).OfType<Guid>().Distinct().ToList() ?? [];
+        var organizationForms = (await db.Forms.Where(x => x.OrganizationId == workflow.OrganizationId && referencedForms.Contains(x.Id)).Select(x => x.Id).ToListAsync()).ToHashSet();
+        if (WorkflowGraphValidation.Validate(request.Graph, organizationForms.Contains) is string error) return Results.BadRequest(new { error });
+        // Store a normalized copy: trimmed labels, settings only as the typed model defines them.
+        var graph = request.Graph! with { Nodes = request.Graph.Nodes.Select(x => x with { Label = x.Label.Trim(), Config = x.Config ?? new() }).ToList() };
+        draft.GraphJson = JsonSerializer.Serialize(graph);
+        draft.DraftRevision++;
+        // Only the draft row changes: touching the definition would make graph saves conflict with renames.
+        draft.UpdatedAt = DateTimeOffset.UtcNow;
+        AuditService.Append(db, "workflow.draft_saved", session.UserId, workflow.Id.ToString(), workflow.OrganizationId);
+        try { await db.SaveChangesAsync(); }
+        catch (DbUpdateConcurrencyException) { return Results.Conflict(new { error = "This draft changed in another session. Reload it before saving." }); }
+        return Results.Ok(await Detail(db, workflow));
     }
 
     private static async Task<IResult> List(HttpContext context, FlowOpsDbContext db)
@@ -95,3 +121,4 @@ public static class WorkflowEndpoints
 }
 
 public sealed record WorkflowDetails(string Name, string? Description, int? Revision = null);
+public sealed record SaveDraftRequest(WorkflowGraph? Graph, int? DraftRevision);

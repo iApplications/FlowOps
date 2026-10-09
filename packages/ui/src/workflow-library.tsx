@@ -41,7 +41,7 @@ export function WorkflowLibrary({ organizationName }: { organizationName: string
   }
   return <section className="panel-card" id="workflows" style={{ marginBottom: 24 }}>
     <div className="panel-header"><div><span className="panel-kicker">{organizationName}</span><h2>Workflows</h2>
-      <p>Create workflows and design their draft versions. Publishing and running workflows arrive in a later phase.</p></div><span className="tag">{workflows.length} workflows</span></div>
+      <p>Create workflows, then select one and open the designer to edit its draft version. Publishing and running workflows arrive in a later phase.</p></div><span className="tag">{workflows.length} workflows</span></div>
     {message && <p className="notice" role={failed ? "alert" : "status"}>{message}</p>}
     {loading ? <p className="empty-state">Loading workflows…</p> : workflows.length === 0 ? <p className="empty-state">Create your first workflow for this organization.</p> :
       <div className="org-list">{workflows.map(workflow => <button key={workflow.id} type="button" disabled={busy} className={`org-option ${selectedId === workflow.id ? "org-option-active" : ""}`} onClick={() => select(workflow)}>
@@ -55,7 +55,10 @@ export function WorkflowLibrary({ organizationName }: { organizationName: string
       <label className="field">Description<textarea maxLength={2000} value={description} disabled={busy} onChange={event => setDescription(event.target.value)} placeholder="Describe what this workflow does" /></label>
       <div className="designer-actions">
         <button className="btn btn-primary" disabled={busy}>{busy ? "Saving…" : selectedId ? "Save changes" : "Create workflow"}</button>
-        {selectedId && <button type="button" className="btn" disabled={busy} onClick={() => select(null)}>Cancel editing</button>}
+        {selectedId && <>
+          <a className="btn" href={`/workflows/${selectedId}`} aria-disabled={busy || undefined} onClick={event => { if (busy) event.preventDefault(); }}>Open designer</a>
+          <button type="button" className="btn" disabled={busy} onClick={() => select(null)}>Cancel editing</button>
+        </>}
       </div>
     </form>
   </section>;
