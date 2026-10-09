@@ -137,7 +137,7 @@ Slice 2 (canvas) was merged into `dev/phase3_main` (#15). It includes:
 
 React Flow (`@xyflow/react` 12.12.0, MIT, pinned) has its own entry point, `@flowops/ui/workflow-designer`, so it is bundled only into Studio's designer page; Portal does not include it. Saving a graph changes only the draft version, so a rename in another tab never blocks a graph save, and vice versa.
 
-Slice 3 (validation) is implemented on `feat/phase3-workflow-validation`; automated and browser checks passed on 2026-10-10. It includes:
+Slice 3 (validation) was merged into `dev/phase3_main` (#16). All three slices are implemented; see [final Phase 3 acceptance](#final-phase-3-acceptance). It includes:
 
 - `WorkflowExpression`: the condition grammar parser. It is documented in [Architecture](ARCHITECTURE.md#condition-expression-grammar-phase-3).
 - `WorkflowGraphCompleteness`: completeness issues, each with a code and the node it concerns. They are returned with every workflow detail and draft save, and as `issueCount` in the workflow list.
@@ -226,3 +226,26 @@ Automated checks cover:
 - the nesting and size limits
 - each completeness rule, with the node it reports
 - issues and `issueCount` returned by the API
+
+## Final Phase 3 acceptance
+
+Each slice passed its own automated and browser checks before merging (#14, #15, #16). Before merging `dev/phase3_main` into `main`:
+
+- [x] Backend tests (54), lint, typecheck and production builds pass on the merged code (`6e32790`, 2026-10-10).
+- [ ] One end-to-end browser pass in Studio over local HTTPS:
+  1. Create "Expense approval" in Workflows.
+  2. In the designer, build Start (form trigger with a published form) → Manager approval → Approved/Rejected ends.
+  3. Save. The panel shows no issues and the list shows **Complete**.
+  4. Refresh, then rename the workflow. Everything persists.
+- [ ] Spot-check a regression of Phase 2: create, publish and submit a form in Portal.
+- [ ] Review the docs and approve the PR from `dev/phase3_main` into `main`.
+
+Roadmap deliverables:
+
+| Deliverable | Delivered by |
+|---|---|
+| Workflow list, create workflow | Studio Workflows list (#14) |
+| Drag-and-drop canvas, nodes, connections, node configuration | React Flow designer (#15) |
+| Draft saving, draft `WorkflowVersion` identity/state | Draft v1, `PUT …/draft` with revision checks, Published-version guard (#14, #15) |
+| Basic workflow validation | Structural save rules (#15), completeness issues and the expression parser (#16) |
+| Initial nodes: Start, Condition, Approval, End | All four, with type-specific settings (#15) |
