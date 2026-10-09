@@ -1086,8 +1086,10 @@ public sealed class SecurityTests : IAsyncLifetime
         Assert.Equal("Manual", graph.GetProperty("nodes")[0].GetProperty("config").GetProperty("trigger").GetString());
         var connection = Assert.Single(graph.GetProperty("connections").EnumerateArray());
         Assert.Equal(("start", "next", "end"), (connection.GetProperty("source").GetString(), connection.GetProperty("sourceHandle").GetString(), connection.GetProperty("target").GetString()));
+        Assert.Empty(draft.GetProperty("issues").EnumerateArray());
         var listed = Assert.Single((await studio.GetFromJsonAsync<JsonElement>("/api/workflows")).EnumerateArray());
         Assert.Equal(1, listed.GetProperty("draftVersionNumber").GetInt32());
+        Assert.Equal(0, listed.GetProperty("issueCount").GetInt32());
 
         // Metadata edits must name the revision they were made against; stale revisions change nothing.
         var path = $"/api/workflows/{workflowId}";
@@ -1161,6 +1163,11 @@ public sealed class SecurityTests : IAsyncLifetime
         Assert.Equal("Employee submits", draft.GetProperty("graph").GetProperty("nodes")[0].GetProperty("label").GetString());
         Assert.Equal(formId, draft.GetProperty("graph").GetProperty("nodes")[0].GetProperty("config").GetProperty("formId").GetGuid());
         Assert.Equal(3, draft.GetProperty("graph").GetProperty("connections").GetArrayLength());
+        // Incomplete drafts save, and the response lists what is missing with the node it concerns.
+        var issues = draft.GetProperty("issues").EnumerateArray().Select(x => (x.GetProperty("code").GetString(), x.GetProperty("nodeId").GetString())).ToList();
+        Assert.Equal([("form_unpublished", "start"), ("output_unconnected", "threshold"), ("output_unconnected", "threshold"), ("unreachable", "threshold")],
+            issues.OrderBy(x => x.Item1, StringComparer.Ordinal).ToList());
+        Assert.Equal(4, Assert.Single((await studio.GetFromJsonAsync<JsonElement>("/api/workflows")).EnumerateArray()).GetProperty("issueCount").GetInt32());
         revision = 1;
 
         // Stale or missing draft revisions change nothing; renames and graph saves do not block each other.
@@ -1217,6 +1224,87 @@ public sealed class SecurityTests : IAsyncLifetime
         var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
         Assert.Equal(2, await db.AuditEvents.CountAsync(x => x.Action == "workflow.draft_saved" && x.SubjectId == workflowId.ToString()));
         Assert.False(await db.WorkflowDefinitions.AnyAsync(x => x.OrganizationId == other));
+    }
+
+    [Theory]
+    [InlineData("request.amount >= 500")]
+    [InlineData("request.amount >= 500 && request.amount <= 5000")]
+    [InlineData("!(approval.managerApproved == true) || request.category == \"Travel\"")]
+    [InlineData("request.currency != 'MYR' && request.total > -0.5")]
+    [InlineData("((a))")]
+    [InlineData("flagged")]
+    [InlineData("name == 'It\\'s fine'")]
+    public void Condition_expressions_accept_the_controlled_grammar(string expression) =>
+        Assert.Null(FlowOps.Api.Workflows.WorkflowExpression.Validate(expression));
+
+    [Theory]
+    [InlineData("", "Enter an expression")]
+    [InlineData("request.amount >=", "ends too early")]
+    [InlineData("request.amount = 500", "Use ==")]
+    [InlineData("a & b", "Use &&")]
+    [InlineData("System.IO.File.Delete('x')", "Function calls are not allowed")]
+    [InlineData("eval('1')", "Function calls are not allowed")]
+    [InlineData("items[0] == 1", "Unsupported character '['")]
+    [InlineData("a == 1; DROP TABLE Forms", "Unsupported character ';'")]
+    [InlineData("'unterminated", "missing its closing quote")]
+    [InlineData("a == 'x\\n'", "Unsupported escape")]
+    [InlineData("1 < a < 3", "Combine comparisons")]
+    [InlineData("(a == 1", "missing its closing ')'")]
+    [InlineData("request.", "Expected a name after '.'")]
+    [InlineData("1.5.2 == a", "Unexpected '.'")]
+    [InlineData("a == 1 b", "Unexpected 'b'")]
+    [InlineData("`whoami`", "Unsupported character '`'")]
+    [InlineData("$(rm -rf /)", "Unsupported character '$'")]
+    public void Condition_expressions_reject_code_and_malformed_syntax(string expression, string expected)
+    {
+        var error = FlowOps.Api.Workflows.WorkflowExpression.Validate(expression);
+        Assert.NotNull(error);
+        Assert.Contains(expected, error);
+    }
+
+    [Fact]
+    public void Condition_expressions_limit_nesting_and_length()
+    {
+        Assert.Contains("nested too deeply", FlowOps.Api.Workflows.WorkflowExpression.Validate(new string('(', 40) + "a" + new string(')', 40)));
+        Assert.Contains("nested too deeply", FlowOps.Api.Workflows.WorkflowExpression.Validate(new string('!', 40) + "a"));
+        Assert.Contains("at most", FlowOps.Api.Workflows.WorkflowExpression.Validate(string.Join(" && ", Enumerable.Repeat("a == 1", 60))));
+    }
+
+    [Fact]
+    public void Workflow_completeness_reports_missing_structure_with_affected_nodes()
+    {
+        static FlowOps.Api.Workflows.WorkflowNode N(string id, string type, FlowOps.Api.Workflows.WorkflowNodeConfig? config = null) =>
+            new(id, type, id, new(0, 0), config ?? new());
+        static FlowOps.Api.Workflows.WorkflowConnection C(string source, string handle, string target) => new($"{source}-{handle}", source, handle, target);
+        List<(string Code, string? Node)> Issues(List<FlowOps.Api.Workflows.WorkflowNode> nodes, List<FlowOps.Api.Workflows.WorkflowConnection> links,
+            Dictionary<Guid, (string, bool)>? forms = null) =>
+            FlowOps.Api.Workflows.WorkflowGraphCompleteness.Issues(new(1, nodes, links), forms ?? []).Select(x => (x.Code, x.NodeId)).OrderBy(x => x.Code).ThenBy(x => x.NodeId).ToList();
+        var manual = new FlowOps.Api.Workflows.WorkflowNodeConfig(Trigger: "Manual");
+
+        // The Phase 5 baseline Expense Approval flow is complete.
+        Assert.Empty(Issues([N("s", "Start", manual), N("a", "Approval", new(AssigneeRole: "Admin")), N("yes", "End"), N("no", "End")],
+            [C("s", "next", "a"), C("a", "approved", "yes"), C("a", "rejected", "no")]));
+        Assert.Equal([("end_missing", null), ("start_missing", null)], Issues([], []));
+        // With several Starts, reachability is not evaluated until exactly one remains.
+        Assert.Equal([("start_multiple", "s2")], Issues([N("s1", "Start", manual), N("s2", "Start", manual), N("e", "End")],
+            [C("s1", "next", "e"), C("s2", "next", "e")]));
+        Assert.Equal([("output_unconnected", "c"), ("unreachable", "c")], Issues([N("s", "Start", manual), N("e", "End"), N("c", "Condition", new(Expression: "a == 1"))],
+            [C("s", "next", "e"), C("c", "true", "e")]));
+        Assert.Equal([("expression_invalid", "c")], Issues([N("s", "Start", manual), N("c", "Condition", new(Expression: "a =")), N("e", "End")],
+            [C("s", "next", "c"), C("c", "true", "e"), C("c", "false", "e")]));
+        Assert.Equal([("start_incoming", "s")], Issues([N("s", "Start", manual), N("a", "Approval", new(AssigneeRole: "Admin")), N("e", "End")],
+            [C("s", "next", "a"), C("a", "approved", "e"), C("a", "rejected", "s")]).Where(x => x.Code == "start_incoming").ToList());
+        // A loop is reported once, and nodes stuck in it have no path to an End.
+        var looped = Issues([N("s", "Start", manual), N("a", "Approval", new(AssigneeRole: "Admin")), N("b", "Approval", new(AssigneeRole: "Owner")), N("e", "End")],
+            [C("s", "next", "a"), C("a", "approved", "b"), C("a", "rejected", "e"), C("b", "approved", "a"), C("b", "rejected", "e")]);
+        Assert.Equal([("cycle", "a")], looped);
+        Assert.Equal([("no_path_to_end", "a"), ("no_path_to_end", "b"), ("no_path_to_end", "s")],
+            Issues([N("s", "Start", manual), N("a", "Condition", new(Expression: "x")), N("b", "Condition", new(Expression: "y")), N("e", "End")],
+                [C("s", "next", "a"), C("a", "true", "b"), C("a", "false", "b"), C("b", "true", "a"), C("b", "false", "a")]).Where(x => x.Code == "no_path_to_end").ToList());
+        var formId = Guid.NewGuid();
+        var formStart = N("s", "Start", new(Trigger: "FormSubmitted", FormId: formId));
+        Assert.Equal([("form_unpublished", "s")], Issues([formStart, N("e", "End")], [C("s", "next", "e")], new() { [formId] = ("Expense claim", false) }));
+        Assert.Empty(Issues([formStart, N("e", "End")], [C("s", "next", "e")], new() { [formId] = ("Expense claim", true) }));
     }
 
     [Fact]

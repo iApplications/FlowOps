@@ -577,6 +577,54 @@ Example:
 request.amount >= 500
 ```
 
+### Condition expression grammar (Phase 3)
+
+Condition nodes store an expression that is parsed on the server by `WorkflowExpression`, a purpose-built tokenizer and recursive-descent parser. It is never compiled or evaluated as code.
+
+```text
+expression := or
+or         := and ( "||" and )*
+and        := unary ( "&&" unary )*
+unary      := "!" unary | comparison
+comparison := operand ( ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) operand )?
+operand    := number | "-" number | string | "true" | "false" | path | "(" expression ")"
+path       := identifier ( "." identifier )*          identifier := [A-Za-z_][A-Za-z0-9_]*
+string     := '...' or "..." with only \\ \' \" escapes and no control characters
+```
+
+The parser rejects everything else, including:
+
+- function calls such as `File.Delete(...)`
+- indexing (`items[0]`)
+- assignment (`=`)
+- single `&`/`|`
+- chained comparisons (`1 < a < 3`)
+- statement separators and shell characters (`;`, `` ` ``, `$`)
+
+Expressions are limited to 500 characters, 200 tokens and 32 levels of nesting. Phase 3 checks syntax only; evaluation against the workflow context and variable typing arrive with conditional routing in Phase 6.
+
+### Workflow graph format (Phase 3)
+
+Each `WorkflowVersion` stores its graph as one JSON document (`GraphJson`), so a Published version freezes nodes, connections and layout together:
+
+```text
+WorkflowGraph      { schemaVersion: 1, nodes: WorkflowNode[], connections: WorkflowConnection[] }
+WorkflowNode       { id, type: Start|Condition|Approval|End, label, position { x, y }, config }
+WorkflowNodeConfig { trigger, formId }            Start: Manual | FormSubmitted + a form of the organization
+                   { expression }                 Condition
+                   { assigneeRole, instructions } Approval: Owner | Admin | Member
+                   { outcome }                    End
+WorkflowConnection { id, source, sourceHandle, target }
+                   sourceHandle: Start → next; Condition → true/false; Approval → approved/rejected; End has none
+```
+
+Validation has two levels:
+
+- **Structural rules reject a save.** They cover limits, IDs, per-type settings, valid outputs, self-connections, and at most one connection per output.
+- **Completeness issues are reported but allowed in a draft.** They cover exactly one Start, at least one End, connected outputs, reachability from Start, a path to an End, cycles, expression syntax and published Start forms.
+
+Phase 4 publishing is expected to require zero completeness issues.
+
 ---
 
 ## 10. Document Engine

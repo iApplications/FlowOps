@@ -45,7 +45,8 @@ export type WorkflowConnection = { id: string; source: string; sourceHandle: str
 export type WorkflowGraph = { schemaVersion: number; nodes: WorkflowNode[]; connections: WorkflowConnection[] };
 export type WorkflowSummary = {
   id: string; name: string; description: string; revision: number; createdAt: string; updatedAt: string;
-  draftVersionNumber: number | null; publishedVersions: number;
+  draftVersionNumber: number | null; publishedVersions: number; issueCount: number | null;
 };
-export type WorkflowDraftVersion = { id: string; versionNumber: number; status: "Draft"; draftRevision: number; graph: WorkflowGraph; updatedAt: string };
-export type WorkflowDetail = Omit<WorkflowSummary, "draftVersionNumber"> & { draft: WorkflowDraftVersion | null };
+export type WorkflowIssue = { code: string; message: string; nodeId?: string | null };
+export type WorkflowDraftVersion = { id: string; versionNumber: number; status: "Draft"; draftRevision: number; graph: WorkflowGraph; issues: WorkflowIssue[]; updatedAt: string };
+export type WorkflowDetail = Omit<WorkflowSummary, "draftVersionNumber" | "issueCount"> & { draft: WorkflowDraftVersion | null };

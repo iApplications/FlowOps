@@ -125,7 +125,7 @@ Slice 1 (foundation) was merged into `dev/phase3_main` (#14). It includes:
 - the Studio **Workflows** list and navigation
 - audit events
 
-Slice 2 (canvas) is implemented on `feat/phase3-workflow-canvas`; automated and browser checks passed on 2026-10-09. It includes:
+Slice 2 (canvas) was merged into `dev/phase3_main` (#15). It includes:
 
 - `PUT /api/workflows/{id}/draft` with structural validation and revision checks
 - the React Flow designer at `/workflows/{id}`, opened from the Workflows list
@@ -137,7 +137,14 @@ Slice 2 (canvas) is implemented on `feat/phase3-workflow-canvas`; automated and 
 
 React Flow (`@xyflow/react` 12.12.0, MIT, pinned) has its own entry point, `@flowops/ui/workflow-designer`, so it is bundled only into Studio's designer page; Portal does not include it. Saving a graph changes only the draft version, so a rename in another tab never blocks a graph save, and vice versa.
 
-Completeness validation and the expression parser follow in slice 3. See [Progress](PROGRESS.md) for status.
+Slice 3 (validation) is implemented on `feat/phase3-workflow-validation`; automated and browser checks passed on 2026-10-10. It includes:
+
+- `WorkflowExpression`: the condition grammar parser. It is documented in [Architecture](ARCHITECTURE.md#condition-expression-grammar-phase-3).
+- `WorkflowGraphCompleteness`: completeness issues, each with a code and the node it concerns. They are returned with every workflow detail and draft save, and as `issueCount` in the workflow list.
+- the designer's issues panel: clicking an issue selects and centres its node. Affected nodes are highlighted with an issue count. While there are unsaved edits, the panel shows the last saved check.
+- an issue count, or **Complete**, for each workflow in the Workflows list
+
+See [Progress](PROGRESS.md) for status.
 
 ## Internal test: workflow foundation
 
@@ -191,3 +198,31 @@ Automated checks cover:
 - 19 structural rejection cases, with the draft unchanged
 - forms from another organization
 - Portal denial and `workflow.draft_saved` audit events
+
+## Internal test: workflow validation
+
+Restart the API after pulling this slice.
+
+1. A new workflow (Start → End) shows **No issues: this draft is complete**. The Workflows list shows **Complete**.
+2. Add a Condition and an Approval without connecting them, then save. The draft saves. The issues panel lists:
+   - the unconnected outputs
+   - "cannot be reached from Start"
+   - "Enter an expression"
+
+   Each affected node is highlighted with an issue count, and the list shows the number of issues.
+3. Click an issue: its node is selected, centred, and its settings open on the right.
+4. Enter condition expressions and save after each:
+   - `request.amount >= 500 && request.currency == 'MYR'` is accepted.
+   - `request.amount = 500`, `File.Delete('x')`, `items[0] == 1` and `'unterminated` each produce an expression issue naming the problem.
+5. Connect the nodes into a loop, for example Approval `approved` → an earlier node. A loop issue appears. Remove the loop and the issue clears after saving.
+6. Delete the End node and save: "Add at least one End node." Delete the Start node and save: "Add a Start node."
+7. Set Start to **When a form is submitted** with a form that has never been published, then save. An issue asks you to publish the form. Publish the form in Forms, reload the designer, and the issue is gone.
+8. Edit without saving: the panel notes that it shows the last saved check.
+9. Build the baseline Expense Approval flow (Start → Manager approval → Approved/Rejected ends): no issues remain.
+
+Automated checks cover:
+
+- 7 valid expressions, and 17 rejected ones, including function calls, SQL/shell fragments and malformed syntax
+- the nesting and size limits
+- each completeness rule, with the node it reports
+- issues and `issueCount` returned by the API
