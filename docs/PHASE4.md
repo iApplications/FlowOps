@@ -1,0 +1,145 @@
+# Phase 4: Workflow Execution Engine + Core Version Identity
+
+## Branches
+
+Phase 4 integration branch: `dev/phase4_main`, created from `main` (`3c29a8e`) after Phase 3 was merged. Create work branches from it and target their PRs back to it. Merge to `main` after Phase 4 implementation, internal testing and approval. Do not commit automatically.
+
+Work branches:
+
+1. `feat/phase4-workflow-publishing`
+2. `feat/phase4-workflow-runtime`
+3. `feat/phase4-form-trigger`
+
+## Scope
+
+In scope ([Roadmap](ROADMAP.md#phase-4--workflow-execution-engine--core-version-identity)):
+
+- publishing a Draft `WorkflowVersion` as an immutable Published version, and creating the next Draft
+- workflow instances pinned to one exact `WorkflowVersionId`
+- distinct `WorkflowInstance`, `WorkflowExecution` and `WorkflowExecutionStep` persistence
+- node execution, deterministic routing, workflow variables (context)
+- instance/execution history, correlation IDs, structured failures and status tracking
+
+Out of scope, by later phase:
+
+| Not in Phase 4 | Phase |
+|---|---|
+| Approval tasks, inbox, approve/reject UI, Portal requester status | 5 |
+| Switch/calculation nodes, data mapping, timed waits, parallel branches | 6 |
+| Version history, comparison, restore and archive UI | 7 |
+| Notifications, SLA, background workers | 8 |
+| Visual step debugger, dry runs, node testing, retry from failed step | 9 |
+
+## Decisions (approved 2026-10-10)
+
+1. **Condition evaluation:** evaluate Condition expressions in Phase 4 with the Phase 3 grammar, so published workflows with conditions can run. A missing variable or a type mismatch fails the run with a structured error. Phase 6 still adds switch/calculation nodes and variable typing.
+2. **Form field keys:** add a short `key` to form fields, generated from the label and editable, so that conditions read `request.amount` instead of a field GUID. Published versions without keys derive them from labels.
+3. **Execution model:** synchronous, in-process during the triggering request. No queue or background worker yet (PROJECT_RULES 18).
+4. **Approval nodes:** the instance enters a durable Waiting state at the node. Resuming (`approved`/`rejected`) is an internal service in Phase 4, covered by tests; Phase 5 adds approval tasks and the UI that calls it.
+5. **Manual runs and run history:** Studio Owner/Admin in the active organization, MFA policy applied.
+6. **Identical republish:** a draft whose graph matches the latest Published version cannot be published again (409 `no_changes`), as with forms.
+
+## Data model
+
+Slice 1 uses the existing `WorkflowVersion` (Status, `PublishedAt`). Slice 2 adds the `WorkflowRuntime` migration:
+
+```text
+WorkflowInstance          one business run, pinned to WorkflowVersionId for life
+- Id, OrganizationId, WorkflowDefinitionId, WorkflowVersionId
+- Status: Running | Waiting | Completed | Failed | Cancelled
+- ContextJson, WaitingNodeId, Outcome
+- Trigger (Manual | FormSubmitted), StartedByUserId, SourceSubmissionId
+- CorrelationId, StartedAt, CompletedAt
+
+WorkflowExecution         one start/resume activation (1 instance → N executions)
+- Id, InstanceId, OrganizationId, Sequence, Reason (Start | Resume), Status
+- TriggeredByUserId, CorrelationId, StartedAt, CompletedAt, ErrorCode, ErrorMessage
+
+WorkflowExecutionStep     one node execution within an execution
+- Id, ExecutionId, InstanceId, OrganizationId, Sequence, NodeId, NodeType, Status, Attempt
+- InputJson, OutputJson, DurationMs, ErrorCode, ErrorMessage, StartedAt, CompletedAt
+```
+
+- An instance never changes its `WorkflowVersionId`. Completed steps and finished executions are immutable (DbContext guard).
+- One instance per (workflow version, form submission), enforced by a unique index for idempotent form triggers.
+- `WorkflowInstance` and `WorkflowExecution` are never used as synonyms (PROJECT_RULES 29).
+
+## Publishing
+
+`POST /api/workflows/{id}/publish` with `draftRevision`:
+
+- **Checks:** the revision is current, structural validation passes, there are zero completeness issues, and the draft differs from the latest Published graph.
+- **In one transaction:**
+  - the draft becomes Published with `PublishedAt`
+  - Draft v+1 is created with a copy of the graph
+  - a `workflow.published` audit event is written
+- **Concurrency:** a concurrent publish loses with 409, via the draft revision token and the unique version index.
+- **Studio:** a Publish button in the designer, disabled while there are issues, unsaved changes or no changes since the last version. The Workflows list shows published versions.
+
+## Engine
+
+- `IWorkflowNodeHandler` per node type (ARCHITECTURE §8):
+  - Start initializes the context.
+  - Condition evaluates its expression and routes `true`/`false`.
+  - Approval sets the instance to Waiting.
+  - End completes the instance with its outcome.
+- **Execution loop:** follow connections from the current node and persist a `WorkflowExecutionStep` per node, recording input, output, status and duration. It stops at End, a durable wait or a failure, with a guard of 200 steps per execution.
+- **Resume:** `ResumeAsync(instance, node, output)` creates a new `WorkflowExecution` with Reason Resume for the same instance and continues from the waiting node's chosen output.
+- **Failures:** structured `ErrorCode`/`ErrorMessage` on the step, the execution and the instance (Failed). There are no silent retries.
+- **Correlation ID:** taken from the request (or generated) and stored on the instance, executions and steps.
+- **Audit:** `workflow.instance_started`, `workflow.instance_completed`, `workflow.instance_failed`. Debug data stays in steps, separate from audit (PROJECT_RULES 9).
+
+## Starting runs and history
+
+- **Manual:** `POST /api/workflows/{id}/runs` starts a run on the latest Published version. It supports an `Idempotency-Key` header and is Studio Owner/Admin only.
+- **Form submitted (slice 3):** saving a form submission starts one run for each workflow whose latest Published version starts from that form. The context is `request.<fieldKey>`, plus submission metadata.
+- **History:** `GET /api/workflows/{id}/runs` and `GET /api/workflow-instances/{id}` (with executions and steps). Studio shows a Runs view per workflow and a run detail page.
+
+## Delivery sequence
+
+1. **Publishing and version identity:** publish API, immutability and next draft, Studio Publish button and version display, audit events, tests.
+2. **Runtime and engine:**
+   - the `WorkflowRuntime` migration and the node handlers
+   - Condition evaluation, durable waits and internal resume
+   - manual runs with idempotency, and the run history API and Studio UI
+   - tests
+3. **Form trigger:** form field keys, starting runs from submissions (idempotent per submission), context mapping, tests.
+4. **Acceptance:**
+   - this document's checklists and ARCHITECTURE notes (runtime model, expression evaluation)
+   - PROGRESS/README updates
+   - browser acceptance, then the merge to `main`
+
+## Current implementation
+
+Slice 1 (publishing) is implemented on `feat/phase4-workflow-publishing`; automated and browser checks passed on 2026-10-10. It includes:
+
+- `POST /api/workflows/{id}/publish`
+- the draft becomes an immutable Published version, and the next draft opens with a copy of its graph. Both steps run in one transaction, as two ordered saves so that the one-Draft index holds.
+- `latestPublished` and `draft.hasUnpublishedChanges` in workflow details, and `latestPublishedVersionNumber` in the list
+- a **Publish version N** button in the designer
+- `workflow.published` audit events
+
+No migration is needed; publishing uses the Phase 3 `WorkflowVersion` columns.
+
+## Internal test: workflow publishing
+
+1. Open a workflow's designer.
+   - The header shows **Draft version 1 · Not published yet**.
+   - **Publish version 1** is enabled only when there are no unsaved changes and no issues.
+2. Make the draft incomplete, for example by disconnecting an output, and save. Publish is disabled with "Resolve the issues before publishing."
+3. Complete the draft, save, and publish. After you confirm:
+   - the message reads "Version 1 published. Further edits go into draft version 2"
+   - the header shows **Draft version 2 · Published version 1**
+4. Publish is now disabled ("No changes since version 1"). Change a label, save, and publish version 2.
+5. The Workflows list shows **Published v2 · Draft v3**.
+6. Publish from a stale tab: it is rejected with "This draft changed in another session. Reload it before publishing."
+7. A Portal account cannot publish.
+
+Automated checks cover:
+
+- missing and stale revisions
+- incomplete drafts refused with their issue list
+- v1 published and Draft v2 opened with the same graph
+- an unchanged republish refused, and v2 published after an edit
+- v1 keeping its original graph
+- Portal denial and `workflow.published` audit events

@@ -1308,6 +1308,79 @@ public sealed class SecurityTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Publishing_freezes_the_draft_and_opens_the_next_version_only_when_complete_and_changed()
+    {
+        using var studio = NewClient();
+        using var portal = NewClient();
+        await RegisterAndLogin(studio, "workflow-publish-owner@example.test");
+        await RegisterAndLogin(portal, "workflow-publish-member@example.test", "Portal");
+        var organization = await CreateOrganization(studio, "Workflow Publish Workspace");
+        var setup = await studio.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+        await Mutate(studio, HttpMethod.Post, "/api/auth/mfa/enable", new { code = AuthenticatorCode(setup.GetProperty("sharedKey").GetString()!) });
+        var created = await (await Mutate(studio, HttpMethod.Post, "/api/workflows", new { name = "Expense approval" })).Content.ReadFromJsonAsync<JsonElement>();
+        var workflowId = created.GetProperty("id").GetGuid();
+        Assert.Equal(JsonValueKind.Null, created.GetProperty("latestPublished").ValueKind);
+        Assert.True(created.GetProperty("draft").GetProperty("hasUnpublishedChanges").GetBoolean());
+        var path = $"/api/workflows/{workflowId}";
+        Task<HttpResponseMessage> Publish(int? draftRevision) => Mutate(studio, HttpMethod.Post, $"{path}/publish", new { draftRevision });
+        Task<HttpResponseMessage> Save(object[] nodes, object[] links, int draftRevision) =>
+            Mutate(studio, HttpMethod.Put, $"{path}/draft", new { graph = new { schemaVersion = 1, nodes, connections = links }, draftRevision });
+
+        Assert.Equal(HttpStatusCode.BadRequest, (await Publish(null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Publish(5)).StatusCode);
+
+        // Incomplete drafts cannot be published; the response lists the issues.
+        object[] nodes = [Node("start", "Start", "Start", new { trigger = "Manual" }), Node("manager", "Approval", "Manager approval", new { assigneeRole = "Admin" }, 300),
+            Node("approved", "End", "Approved", new { outcome = "Approved" }, 600, -80), Node("rejected", "End", "Rejected", new { outcome = "Rejected" }, 600, 80)];
+        Assert.Equal(HttpStatusCode.OK, (await Save(nodes, [Link("c1", "start", "next", "manager"), Link("c2", "manager", "approved", "approved")], 0)).StatusCode);
+        var incomplete = await Publish(1);
+        Assert.Equal(HttpStatusCode.BadRequest, incomplete.StatusCode);
+        var incompleteBody = await incomplete.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("workflow_incomplete", incompleteBody.GetProperty("code").GetString());
+        Assert.NotEmpty(incompleteBody.GetProperty("issues").EnumerateArray());
+
+        // A complete draft publishes as v1 and Draft v2 opens with the same graph.
+        object[] links = [Link("c1", "start", "next", "manager"), Link("c2", "manager", "approved", "approved"), Link("c3", "manager", "rejected", "rejected")];
+        Assert.Equal(HttpStatusCode.OK, (await Save(nodes, links, 1)).StatusCode);
+        var published = await Publish(2);
+        Assert.True(published.StatusCode == HttpStatusCode.OK, await published.Content.ReadAsStringAsync());
+        var afterFirst = await published.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, afterFirst.GetProperty("latestPublished").GetProperty("versionNumber").GetInt32());
+        Assert.Equal(1, afterFirst.GetProperty("publishedVersions").GetInt32());
+        Assert.Equal(2, afterFirst.GetProperty("draft").GetProperty("versionNumber").GetInt32());
+        Assert.Equal(0, afterFirst.GetProperty("draft").GetProperty("draftRevision").GetInt32());
+        Assert.False(afterFirst.GetProperty("draft").GetProperty("hasUnpublishedChanges").GetBoolean());
+        Assert.Equal(4, afterFirst.GetProperty("draft").GetProperty("graph").GetProperty("nodes").GetArrayLength());
+
+        // An unchanged draft cannot be republished; a saved change can.
+        var unchanged = await Publish(0);
+        Assert.Equal(HttpStatusCode.Conflict, unchanged.StatusCode);
+        Assert.Equal("no_changes", (await unchanged.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+        nodes[1] = Node("manager", "Approval", "Finance approval", new { assigneeRole = "Owner" }, 300);
+        var edited = await (await Save(nodes, links, 0)).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(edited.GetProperty("draft").GetProperty("hasUnpublishedChanges").GetBoolean());
+        Assert.Equal(HttpStatusCode.OK, (await Publish(1)).StatusCode);
+        var listed = Assert.Single((await studio.GetFromJsonAsync<JsonElement>("/api/workflows")).EnumerateArray());
+        Assert.Equal(2, listed.GetProperty("latestPublishedVersionNumber").GetInt32());
+        Assert.Equal(3, listed.GetProperty("draftVersionNumber").GetInt32());
+
+        // Portal members cannot publish.
+        await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/members", new { email = "workflow-publish-member@example.test", role = "Member" });
+        await Mutate(portal, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(portal, HttpMethod.Post, $"{path}/publish", new { draftRevision = 0 })).StatusCode);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        var versions = await db.WorkflowVersions.Where(x => x.WorkflowDefinitionId == workflowId).OrderBy(x => x.VersionNumber).ToListAsync();
+        Assert.Equal(["Published", "Published", "Draft"], versions.Select(x => x.Status));
+        Assert.All(versions.Take(2), x => Assert.NotNull(x.PublishedAt));
+        // v1 keeps the graph it was published with.
+        Assert.Equal("Manager approval", versions[0].Graph.Nodes.Single(x => x.Id == "manager").Label);
+        Assert.Equal("Finance approval", versions[1].Graph.Nodes.Single(x => x.Id == "manager").Label);
+        Assert.Equal(2, await db.AuditEvents.CountAsync(x => x.Action == "workflow.published" && x.SubjectId == workflowId.ToString()));
+    }
+
+    [Fact]
     public async Task Published_workflow_versions_are_immutable_and_each_workflow_has_one_draft()
     {
         using var scope = _factory.Services.CreateScope();
