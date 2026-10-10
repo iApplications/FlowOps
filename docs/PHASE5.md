@@ -81,7 +81,7 @@ ApprovalTaskEvent         append-only history for a task
 
 ## Acceptance checklist
 
-Automated checks (62 backend tests, Debug build, 2026-10-10) cover every item. The browser pass is still to be run.
+Automated checks (62 backend tests, Debug build, 2026-10-10) cover every item. A live API pass against the local HTTPS stack and PostgreSQL (21 checks: role scoping, self-approval refusal, concurrent decisions, approve/reject, request changes and resubmit, version pinning after republishing) passed on 2026-10-10. The UI browser pass is still to be run.
 
 - [x] Expense form submission starts a run that waits on a Manager-role task
 - [x] Member with the role sees the task; other role and other organization do not
