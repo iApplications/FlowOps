@@ -15,7 +15,8 @@ Updated: 2026-10-10
 - Phase 4 integration branch: `dev/phase4_main`, created from `main` (`3c29a8e`). The plan was approved on 2026-10-10 and is recorded in [Phase 4](PHASE4.md).
 - Slice 1 (publishing) was merged into `dev/phase4_main` (#20).
 - Slice 2 (runtime) was merged into `dev/phase4_main` (#21).
-- Current work branch: `feat/phase4-form-trigger` (slice 3). Automated and browser checks passed on 2026-10-10; PR into `dev/phase4_main` pending.
+- Slice 3 (form trigger) was merged into `dev/phase4_main` (#22). Phase 4 is **implementation complete**.
+- Current work branch: `feat/phase4-acceptance` (slice 4: architecture notes, final checklist, docs). Automated checks (60 backend tests) and the final browser pass passed on 2026-10-10; PR into `dev/phase4_main`, then the merge into `main`, pending.
 - No automatic commits or pushes; each merge follows internal testing and user approval.
 
 ## Delivery progress
@@ -32,13 +33,14 @@ Updated: 2026-10-10
 | Phase 2 local file uploads/downloads | Complete: required/optional files, streaming validation, protected downloads | Accepted 2026-10-08; merged into Phase 2 (#9, #10) |
 | Code review hardening (Phase 1 + Phase 2) | Complete | Automated, API and browser acceptance passed 2026-10-08; merged into Phase 2 (#10) |
 | Phase 2 final acceptance and merge to main | Complete | Approved by the user and merged into main 2026-10-08 (#12) |
-| Phase 3 workflow foundation (slice 1) | Complete: definitions, Draft v1 with Start â†’ End graph, Published-version guard, list/create/rename API, Studio Workflows list | Automated and browser checks passed 2026-10-08; merged into Phase 3 (#14) |
+| Phase 3 workflow foundation (slice 1) | Complete: definitions, Draft v1 with Start → End graph, Published-version guard, list/create/rename API, Studio Workflows list | Automated and browser checks passed 2026-10-08; merged into Phase 3 (#14) |
 | Phase 3 workflow canvas (slice 2) | Complete: React Flow designer, draft graph save with structural validation, node settings including the Start form trigger | Automated and browser checks passed 2026-10-09; merged into Phase 3 (#15) |
 | Phase 3 workflow validation (slice 3) | Complete: condition expression parser, completeness issues with node references, designer issues panel and highlighting, list issue counts | Automated and browser checks passed 2026-10-10; merged into Phase 3 (#16) |
 | Phase 3 final acceptance and merge to main | Complete | Approved by the user and merged into main 2026-10-10 (#18) |
 | Phase 4 workflow publishing (slice 1) | Complete: publish API, immutable versions with next draft, Studio Publish button, published version in list | Automated and browser checks passed 2026-10-10; merged into Phase 4 (#20) |
 | Phase 4 workflow runtime (slice 2) | Complete: runtime tables, node handlers, condition evaluation, durable approval wait and internal resume, idempotent manual runs, run history API and Studio Runs pages | Automated and browser checks passed 2026-10-10; merged into Phase 4 (#21) |
-| Phase 4 form trigger (slice 3) | Implemented: form field keys, runs started from Portal submissions (idempotent per submission), `request.<key>` and `submission.*` variables | Automated and browser checks passed 2026-10-10; PR into Phase 4 pending |
+| Phase 4 form trigger (slice 3) | Implemented: form field keys, runs started from Portal submissions (idempotent per submission), `request.<key>` and `submission.*` variables | Automated and browser checks passed 2026-10-10; merged into Phase 4 (#22) |
+| Phase 4 final acceptance and merge to main | Docs and checklist on `feat/phase4-acceptance` | Automated and browser checks passed 2026-10-10; merge pending |
 | Phase 5 and later roadmap phases | Pending | Not started |
 
 ## Phase 2 roadmap deliverables
@@ -57,7 +59,7 @@ Updated: 2026-10-10
 
 - Publishing freezes an immutable snapshot (name, description, fields). Later draft edits never change published versions or historical responses. A draft identical to the latest version cannot be republished (409 `no_changes`); the designer disables Publish until a saved change exists.
 - New responses must target the latest published version. A page opened before republishing gets 409 `form_version_outdated` and must reload.
-- Portal submits all eight field types, with one file per File field. Files must match the field's extensions and 1â€“10 MB limit; all files together are limited to 20 MB.
+- Portal submits all eight field types, with one file per File field. Files must match the field's extensions and 1–10 MB limit; all files together are limited to 20 MB.
 - Allowed types: PDF, PNG, JPG/JPEG, UTF-8 TXT and CSV. Content signatures and UTF-8 text are validated while streaming, independently of the browser's content type.
 - Local storage uses generated IDs outside the web folder; history shows sanitized original filenames.
 - Portal download access is limited to the response owner in the active assigned organization. Studio requires the active organization's Owner/Admin role and MFA policy.
@@ -69,7 +71,7 @@ Updated: 2026-10-10
 A review of the Phase 2 changes and the Phase 1 authentication/organization code found no tenant-isolation, CSRF or file-path problems. It led to these changes:
 
 - **Login abuse:** wrong passwords on unconfirmed accounts count toward lockout. Before, they were unlimited and the 403/401 difference revealed a correct password. A successful password reset clears lockout.
-- **Rate limiting behind the proxy:** the API can trust forwarded client addresses (`ForwardedHeaders:Enabled`, off by default). The auth limit is configurable (`RateLimiting:AuthPermitLimit`). Production must place an edge proxy in front of Next.js; see [Security Â§12.4](SECURITY.md#124-rate-limiting-and-abuse-protection).
+- **Rate limiting behind the proxy:** the API can trust forwarded client addresses (`ForwardedHeaders:Enabled`, off by default). The auth limit is configurable (`RateLimiting:AuthPermitLimit`). Production must place an edge proxy in front of Next.js; see [Security §12.4](SECURITY.md#124-rate-limiting-and-abuse-protection).
 - **Registration:** the account, its Studio signup claim and the audit event are committed in one transaction.
 - **Submissions:** only the latest published version is accepted. Retries are answered before files are written. JSON and file submissions share one fingerprint/retry scheme.
 - **Publishing:** identical republishing is refused; form responses include `hasUnpublishedChanges`.

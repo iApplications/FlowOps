@@ -9,6 +9,7 @@ Work branches:
 1. `feat/phase4-workflow-publishing`
 2. `feat/phase4-workflow-runtime`
 3. `feat/phase4-form-trigger`
+4. `feat/phase4-acceptance`
 
 ## Scope
 
@@ -51,7 +52,7 @@ WorkflowInstance          one business run, pinned to WorkflowVersionId for life
 - Trigger (Manual | FormSubmitted), StartedByUserId, SourceSubmissionId
 - CorrelationId, StartedAt, CompletedAt
 
-WorkflowExecution         one start/resume activation (1 instance â†’ N executions)
+WorkflowExecution         one start/resume activation (1 instance → N executions)
 - Id, InstanceId, OrganizationId, Sequence, Reason (Start | Resume), Status
 - TriggeredByUserId, CorrelationId, StartedAt, CompletedAt, ErrorCode, ErrorMessage
 
@@ -78,7 +79,7 @@ WorkflowExecutionStep     one node execution within an execution
 
 ## Engine
 
-- `IWorkflowNodeHandler` per node type (ARCHITECTURE Â§8):
+- `IWorkflowNodeHandler` per node type (ARCHITECTURE §8):
   - Start initializes the context.
   - Condition evaluates its expression and routes `true`/`false`.
   - Approval sets the instance to Waiting.
@@ -132,7 +133,7 @@ Implemented on `feat/phase4-workflow-runtime`; automated and browser checks pass
 - `POST /api/workflows/{id}/runs` with `{ "request": { ... } }` and an optional `Idempotency-Key`. Only workflows whose latest Published version has a Manual trigger can be run manually (409 `trigger_not_manual`). A retry with the same key and values returns the same run (200); different values return 409 `idempotency_key_reused`.
 - `X-Correlation-ID` is taken from the request when well formed (otherwise generated), echoed on the response and stored on the instance, executions and steps.
 - `GET /api/workflows/{id}/runs` (25 per page, newest first) and `GET /api/workflow-instances/{id}` (pinned version graph, variables, executions and steps)
-- Studio: **Runs** (`/workflows/{id}/runs`) with a Start run form and history, and a run detail page with each executionâ€™s steps, input/output and errors
+- Studio: **Runs** (`/workflows/{id}/runs`) with a Start run form and history, and a run detail page with each execution’s steps, input/output and errors
 - audit events `workflow.instance_started`, `workflow.instance_completed` and `workflow.instance_failed`
 
 Run variables are `request.*` (the values sent with the run) and `trigger.type`/`trigger.startedAt`.
@@ -141,21 +142,54 @@ Run variables are `request.*` (the values sent with the run) and `trigger.type`/
 
 Implemented on `feat/phase4-form-trigger`; automated and browser checks passed on 2026-10-10. No migration: keys are stored in the form's field JSON, and the slice 2 unique (version, form submission) index is used. It includes:
 
-- **Field keys:** each form field has a `key` (letters, digits and underscores, starting with a letter or underscore, at most 40 characters, not `true`/`false`, unique per form ignoring case). Saving fields generates missing keys from labels ("Amount (USD)" â†’ `amountUsd`, with `2`, `3`â€¦ for repeats) and keeps edited ones. Versions published before keys existed derive them from their labels the same way.
+- **Field keys:** each form field has a `key` (letters, digits and underscores, starting with a letter or underscore, at most 40 characters, not `true`/`false`, unique per form ignoring case). Saving fields generates missing keys from labels ("Amount (USD)" → `amountUsd`, with `2`, `3`… for repeats) and keeps edited ones. Versions published before keys existed derive them from their labels the same way.
 - **Starting runs:** a new Portal submission (with or without files) starts one run for each workflow whose latest version published at the time of the submission starts with "When a form is submitted" for that form. Runs are started after the submission is saved, by the submitter, with the request's correlation ID.
 - **Idempotency:** a submission retry starts only runs that are still missing (for example after a crash) and never one for a workflow published after the submission. The unique index stops concurrent retries from starting a run twice.
 - **Failures:** a run that fails (for example `variable_missing`) is recorded as a Failed run; the submission still succeeds.
 - **Variables:** `request.<key>` for every field of the submitted form version (numbers, text, dates and options as text, checkboxes as true/false, files as the attachment ID, unanswered fields as empty values), `submission.id`, `submission.formId`, `submission.formVersion`, `submission.submittedAt`, and `trigger.type` = `FormSubmitted`.
 - **Studio:** a **Workflow key** setting per field in the form designer; the Condition settings list the trigger form's `request.*` names; the run detail shows the source submission ID.
 
+## Slice 4: acceptance
+
+On `feat/phase4-acceptance`. No code changes. It includes:
+
+- the runtime model and expression evaluation in [Architecture](ARCHITECTURE.md#7-workflow-runtime)
+- the final checklist below, PROGRESS and README updates
+- repaired character encoding in this document
+
+## Final Phase 4 acceptance
+
+Each slice passed its own automated and browser checks before merging (#20, #21, #22). Before merging `dev/phase4_main` into `main`:
+
+- [x] Backend tests (60), lint, typecheck and production builds pass on the merged code (`654fd07`, 2026-10-10).
+- [x] One end-to-end browser pass over local HTTPS (user-reported, 2026-10-10; restart the API, Studio and Portal first):
+  1. In Studio, publish a form with Currency "Amount" (key `amount`).
+  2. Design "Expense approval": Start (When a form is submitted, that form) → Condition `request.amount > 1000`; true → Approval → End “Approved” / End “Rejected”; false → End “Auto-approved”. Save with no issues and publish version 1.
+  3. In the Portal, submit amount 250: the workflow's Runs show a Completed “Auto-approved” run on Version 1.
+  4. Submit amount 5000: the run is **Waiting** at the approval node, and its detail shows each step's input and output.
+  5. Change a label, publish version 2 and submit again: the new run shows Version 2 and the earlier runs keep Version 1.
+- [x] Spot-check regressions of Phases 2 and 3 (passed 2026-10-10): a form used by no workflow still submits; a draft-only workflow still saves and shows its issues.
+- [ ] Review the docs and approve the PR from `dev/phase4_main` into `main`.
+
+Roadmap deliverables:
+
+| Deliverable | Delivered by |
+|---|---|
+| Publish a Draft as an immutable version and open the next Draft | Publish API and Studio Publish button (#20) |
+| Instances pinned to one `WorkflowVersionId` | `WorkflowInstance` with the DbContext version guard (#21) |
+| Separate instance, execution and step persistence | `WorkflowRuntime` migration (#21) |
+| Node execution, deterministic routing, workflow variables | `WorkflowEngine`, node handlers, Condition evaluation, `request.*`/`submission.*` context (#21, #22) |
+| History, correlation IDs, structured failures, status tracking | Run history API and Studio Runs pages, `X-Correlation-ID`, error codes on steps, executions and instances (#21) |
+| Form-submitted trigger | Field keys and idempotent runs per submission (#22) |
+
 ## Internal test: form trigger
 
 Restart the API, Studio and Portal first.
 
 1. In Studio, open a form and add Currency "Amount" and Checkbox "Urgent". The **Workflow key** placeholders read `amount` and `urgent`. Change Urgent's key to `isUrgent`, save and publish.
-2. Design a workflow: Start (When a form is submitted, that form) â†’ Condition. Its settings list `request.amount` and `request.isUrgent`. Use `request.amount > 1000`; connect true â†’ Approval â†’ End â€œApprovedâ€ / End â€œRejectedâ€, and false â†’ End â€œAuto-approvedâ€. Save and publish.
+2. Design a workflow: Start (When a form is submitted, that form) → Condition. Its settings list `request.amount` and `request.isUrgent`. Use `request.amount > 1000`; connect true → Approval → End “Approved” / End “Rejected”, and false → End “Auto-approved”. Save and publish.
 3. **Runs** for this workflow: Start run is refused ("starts when its form is submitted").
-4. In the Portal, submit the form with amount 250. The workflow's Runs show a Completed â€œAuto-approvedâ€ run, trigger "Form submitted", started by the Portal user. The run detail shows the submission ID and `request.amount`, `request.isUrgent` and `submission.*` variables.
+4. In the Portal, submit the form with amount 250. The workflow's Runs show a Completed “Auto-approved” run, trigger "Form submitted", started by the Portal user. The run detail shows the submission ID and `request.amount`, `request.isUrgent` and `submission.*` variables.
 5. Submit with amount 5000: the run is **Waiting** at the approval node.
 6. Publish a second workflow on the same form whose condition uses `request.total > 1`. Submit again: the submission succeeds, the first workflow runs, and the second run **Failed** with `variable_missing`.
 7. Forms not used by a published workflow, draft-only workflows and Manual workflows start no runs.
@@ -166,9 +200,9 @@ Automated checks cover key generation and validation, keys assigned on save, run
 
 Apply the migration (`dotnet ef database update -p backend/FlowOps.Api`) and restart the API and Studio first.
 
-1. Design a workflow: Start (Manual) â†’ Condition `request.amount > 1000`. Connect true â†’ Approval â†’ End â€œApprovedâ€ / End â€œRejectedâ€, and false â†’ End â€œAuto-approvedâ€. Save and publish.
+1. Design a workflow: Start (Manual) → Condition `request.amount > 1000`. Connect true → Approval → End “Approved” / End “Rejected”, and false → End “Auto-approved”. Save and publish.
 2. Open **Runs** from the designer or the Workflows list (**View runs**).
-3. Start a run with `{ "amount": 250 }`: â€œRun completed: Auto-approved.â€ The run detail shows Start â†’ Condition (output `result: false`) â†’ End, all Completed.
+3. Start a run with `{ "amount": 250 }`: “Run completed: Auto-approved.” The run detail shows Start → Condition (output `result: false`) → End, all Completed.
 4. Start a run with `{ "amount": 5000 }`: the run is **Waiting** at the approval node.
 5. Start a run with `{ "total": 5 }`: the run **Failed** with `variable_missing`; with `{ "amount": "lots" }` it fails with `type_mismatch`. The failed step shows the error.
 6. Edit the draft, publish version 2, and start another run: it shows Version 2, while the earlier runs keep Version 1.
@@ -179,14 +213,14 @@ Automated checks cover the expression evaluator, routing, the durable wait and r
 ## Internal test: workflow publishing
 
 1. Open a workflow's designer.
-   - The header shows **Draft version 1 Â· Not published yet**.
+   - The header shows **Draft version 1 · Not published yet**.
    - **Publish version 1** is enabled only when there are no unsaved changes and no issues.
 2. Make the draft incomplete, for example by disconnecting an output, and save. Publish is disabled with "Resolve the issues before publishing."
 3. Complete the draft, save, and publish. After you confirm:
    - the message reads "Version 1 published. Further edits go into draft version 2"
-   - the header shows **Draft version 2 Â· Published version 1**
+   - the header shows **Draft version 2 · Published version 1**
 4. Publish is now disabled ("No changes since version 1"). Change a label, save, and publish version 2.
-5. The Workflows list shows **Published v2 Â· Draft v3**.
+5. The Workflows list shows **Published v2 · Draft v3**.
 6. Publish from a stale tab: it is rejected with "This draft changed in another session. Reload it before publishing."
 7. A Portal account cannot publish.
 
