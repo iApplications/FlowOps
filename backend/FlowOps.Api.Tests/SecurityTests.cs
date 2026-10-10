@@ -1270,12 +1270,13 @@ public sealed class SecurityTests : IAsyncLifetime
         Assert.Contains("at most", FlowOps.Api.Workflows.WorkflowExpression.Validate(string.Join(" && ", Enumerable.Repeat("a == 1", 60))));
     }
 
+    private static FlowOps.Api.Workflows.WorkflowNode N(string id, string type, FlowOps.Api.Workflows.WorkflowNodeConfig? config = null) =>
+        new(id, type, id, new(0, 0), config ?? new());
+    private static FlowOps.Api.Workflows.WorkflowConnection C(string source, string handle, string target) => new($"{source}-{handle}", source, handle, target);
+
     [Fact]
     public void Workflow_completeness_reports_missing_structure_with_affected_nodes()
     {
-        static FlowOps.Api.Workflows.WorkflowNode N(string id, string type, FlowOps.Api.Workflows.WorkflowNodeConfig? config = null) =>
-            new(id, type, id, new(0, 0), config ?? new());
-        static FlowOps.Api.Workflows.WorkflowConnection C(string source, string handle, string target) => new($"{source}-{handle}", source, handle, target);
         List<(string Code, string? Node)> Issues(List<FlowOps.Api.Workflows.WorkflowNode> nodes, List<FlowOps.Api.Workflows.WorkflowConnection> links,
             Dictionary<Guid, (string, bool)>? forms = null) =>
             FlowOps.Api.Workflows.WorkflowGraphCompleteness.Issues(new(1, nodes, links), forms ?? []).Select(x => (x.Code, x.NodeId)).OrderBy(x => x.Code).ThenBy(x => x.NodeId).ToList();
@@ -1413,6 +1414,221 @@ public sealed class SecurityTests : IAsyncLifetime
         // The database also refuses a second editable draft for the same workflow.
         db.Add(new FlowOps.Api.Workflows.WorkflowVersion { WorkflowDefinitionId = workflow.Id, OrganizationId = organization.Id, VersionNumber = 3 });
         await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+    }
+
+    [Fact]
+    public void Condition_expressions_evaluate_against_run_variables_with_structured_errors()
+    {
+        var variables = System.Text.Json.Nodes.JsonNode.Parse("""
+            { "request": { "amount": 1250.5, "category": "Travel", "urgent": true, "note": null, "lines": [1, 2], "approver": { "level": 2 } } }
+            """)!.AsObject();
+        (bool, string?) Eval(string expression)
+        {
+            var result = FlowOps.Api.Workflows.WorkflowExpression.Evaluate(expression, variables);
+            return (result.Value, result.ErrorCode);
+        }
+        Assert.Equal((true, null), Eval("request.amount > 1000"));
+        Assert.Equal((false, null), Eval("request.amount <= -1"));
+        Assert.Equal((true, null), Eval("request.category == 'Travel' && request.urgent"));
+        Assert.Equal((true, null), Eval("!(request.category != \"Travel\") || missing.value"));
+        Assert.Equal((true, null), Eval("request.approver.level >= 2 && request.category < 'Z'"));
+        // Short-circuiting skips the right side, so its missing variable is not an error.
+        Assert.Equal((false, null), Eval("request.amount < 0 && missing.value > 1"));
+        Assert.Equal((true, null), Eval("request.note != 'x'"));
+        Assert.Equal((false, "variable_missing"), Eval("request.total > 10"));
+        Assert.Equal((false, "variable_missing"), Eval("request.amount.value > 10"));
+        Assert.Equal((false, "type_mismatch"), Eval("request.category > 10"));
+        Assert.Equal((false, "type_mismatch"), Eval("request.note < 10"));
+        Assert.Equal((false, "type_mismatch"), Eval("request.amount"));
+        Assert.Equal((false, "type_mismatch"), Eval("request.lines == 2"));
+        Assert.Equal((false, "type_mismatch"), Eval("request.amount && true"));
+        Assert.Equal((false, "expression_invalid"), Eval("request.amount >"));
+    }
+
+    // Start (manual) → Condition request.amount > 1000 → Approval or straight to an auto-approved End.
+    private static object[] RunnableNodes(string approvedOutcome = "Approved") =>
+    [
+        Node("start", "Start", "Start", new { trigger = "Manual" }), Node("check", "Condition", "Large amount?", new { expression = "request.amount > 1000" }, 250),
+        Node("manager", "Approval", "Manager approval", new { assigneeRole = "Admin" }, 500, -80), Node("auto", "End", "Auto approved", new { outcome = "Auto-approved" }, 500, 120),
+        Node("approved", "End", "Approved", new { outcome = approvedOutcome }, 750, -160), Node("rejected", "End", "Rejected", new { outcome = "Rejected" }, 750, 0)
+    ];
+    private static readonly object[] RunnableLinks = [Link("c1", "start", "next", "check"), Link("c2", "check", "true", "manager"), Link("c3", "check", "false", "auto"),
+        Link("c4", "manager", "approved", "approved"), Link("c5", "manager", "rejected", "rejected")];
+
+    private static async Task<HttpResponseMessage> StartRun(HttpClient client, Guid workflowId, object request, string? idempotencyKey = null, string? correlationId = null)
+    {
+        using var message = new HttpRequestMessage(HttpMethod.Post, $"/api/workflows/{workflowId}/runs") { Content = JsonContent.Create(new { request }) };
+        var csrf = await client.GetFromJsonAsync<JsonElement>("/api/auth/csrf");
+        message.Headers.Add("X-CSRF-TOKEN", csrf.GetProperty("requestToken").GetString());
+        if (idempotencyKey is not null) message.Headers.Add("Idempotency-Key", idempotencyKey);
+        if (correlationId is not null) message.Headers.Add("X-Correlation-ID", correlationId);
+        return await client.SendAsync(message);
+    }
+
+    [Fact]
+    public async Task Manual_runs_route_wait_resume_fail_and_stay_pinned_to_their_version()
+    {
+        using var studio = NewClient();
+        using var portal = NewClient();
+        using var outsider = NewClient();
+        await RegisterAndLogin(studio, "workflow-run-owner@example.test");
+        await RegisterAndLogin(portal, "workflow-run-member@example.test", "Portal");
+        await RegisterAndLogin(outsider, "workflow-run-outsider@example.test");
+        var organization = await CreateOrganization(studio, "Workflow Run Workspace");
+        await CreateOrganization(outsider, "Other Run Workspace");
+        var setup = await studio.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+        await Mutate(studio, HttpMethod.Post, "/api/auth/mfa/enable", new { code = AuthenticatorCode(setup.GetProperty("sharedKey").GetString()!) });
+        var outsiderSetup = await outsider.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+        await Mutate(outsider, HttpMethod.Post, "/api/auth/mfa/enable", new { code = AuthenticatorCode(outsiderSetup.GetProperty("sharedKey").GetString()!) });
+        var created = await (await Mutate(studio, HttpMethod.Post, "/api/workflows", new { name = "Expense approval" })).Content.ReadFromJsonAsync<JsonElement>();
+        var workflowId = created.GetProperty("id").GetGuid();
+        var path = $"/api/workflows/{workflowId}";
+
+        // Unpublished workflows cannot run.
+        var unpublished = await StartRun(studio, workflowId, new { amount = 10 });
+        Assert.Equal(HttpStatusCode.Conflict, unpublished.StatusCode);
+        Assert.Equal("not_published", (await unpublished.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"{path}/draft", new { graph = new { schemaVersion = 1, nodes = RunnableNodes(), connections = RunnableLinks }, draftRevision = 0 })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Post, $"{path}/publish", new { draftRevision = 1 })).StatusCode);
+
+        // A small amount routes false and completes in one execution; the correlation ID is kept and echoed.
+        var small = await StartRun(studio, workflowId, new { amount = 250 }, correlationId: "expense-250");
+        Assert.Equal(HttpStatusCode.Created, small.StatusCode);
+        Assert.Equal("expense-250", small.Headers.GetValues("X-Correlation-ID").Single());
+        var smallRun = await small.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Completed", smallRun.GetProperty("status").GetString());
+        Assert.Equal("Auto-approved", smallRun.GetProperty("outcome").GetString());
+        Assert.Equal("expense-250", smallRun.GetProperty("correlationId").GetString());
+        Assert.Equal(1, smallRun.GetProperty("version").GetProperty("versionNumber").GetInt32());
+        var smallSteps = Assert.Single(smallRun.GetProperty("executions").EnumerateArray()).GetProperty("steps").EnumerateArray().ToList();
+        Assert.Equal(["start", "check", "auto"], smallSteps.Select(x => x.GetProperty("nodeId").GetString()));
+        Assert.All(smallSteps, x => Assert.Equal("Completed", x.GetProperty("status").GetString()));
+        Assert.False(smallSteps[1].GetProperty("output").GetProperty("result").GetBoolean());
+        Assert.Equal(250, smallRun.GetProperty("variables").GetProperty("request").GetProperty("amount").GetInt32());
+
+        // A large amount waits durably at the approval node.
+        var large = await (await StartRun(studio, workflowId, new { amount = 5000 })).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Waiting", large.GetProperty("status").GetString());
+        Assert.Equal("manager", large.GetProperty("waitingNodeId").GetString());
+        var largeExecution = Assert.Single(large.GetProperty("executions").EnumerateArray());
+        Assert.Equal("Waiting", largeExecution.GetProperty("status").GetString());
+        Assert.Equal("Waiting", largeExecution.GetProperty("steps").EnumerateArray().Last().GetProperty("status").GetString());
+        var largeId = large.GetProperty("id").GetGuid();
+
+        // Missing variables and wrong types fail the run with structured errors on the step, execution and instance.
+        var missing = await (await StartRun(studio, workflowId, new { total = 5 })).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Failed", missing.GetProperty("status").GetString());
+        Assert.Equal("variable_missing", missing.GetProperty("errorCode").GetString());
+        var failedExecution = Assert.Single(missing.GetProperty("executions").EnumerateArray());
+        Assert.Equal("variable_missing", failedExecution.GetProperty("errorCode").GetString());
+        Assert.Equal("Failed", failedExecution.GetProperty("steps").EnumerateArray().Last().GetProperty("status").GetString());
+        var mismatch = await (await StartRun(studio, workflowId, new { amount = "lots" })).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("type_mismatch", mismatch.GetProperty("errorCode").GetString());
+
+        // Idempotency: the same key and values return the same run; different values with that key are refused.
+        var first = await StartRun(studio, workflowId, new { amount = 10 }, "retry-1");
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+        var retried = await StartRun(studio, workflowId, new { amount = 10 }, "retry-1");
+        Assert.Equal(HttpStatusCode.OK, retried.StatusCode);
+        Assert.Equal((await first.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid(), (await retried.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid());
+        var reused = await StartRun(studio, workflowId, new { amount = 11 }, "retry-1");
+        Assert.Equal(HttpStatusCode.Conflict, reused.StatusCode);
+        Assert.Equal("idempotency_key_reused", (await reused.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+        Assert.Equal(HttpStatusCode.BadRequest, (await StartRun(studio, workflowId, new { amount = 10 }, "bad key")).StatusCode);
+
+        // Publish v2 with a different approved outcome; the waiting v1 run still resumes on the v1 graph.
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"{path}/draft", new { graph = new { schemaVersion = 1, nodes = RunnableNodes("Approved in v2"), connections = RunnableLinks }, draftRevision = 0 })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Post, $"{path}/publish", new { draftRevision = 1 })).StatusCode);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+            var engine = scope.ServiceProvider.GetRequiredService<FlowOps.Api.Workflows.WorkflowEngine>();
+            var instance = await db.WorkflowInstances.SingleAsync(x => x.Id == largeId);
+            var wrongNode = await Assert.ThrowsAsync<FlowOps.Api.Workflows.WorkflowRuntimeException>(() => engine.ResumeAsync(instance, "check", "true", null, "resume-1"));
+            Assert.Equal("not_waiting", wrongNode.Code);
+            var wrongOutput = await Assert.ThrowsAsync<FlowOps.Api.Workflows.WorkflowRuntimeException>(() => engine.ResumeAsync(instance, "manager", "maybe", null, "resume-1"));
+            Assert.Equal("output_invalid", wrongOutput.Code);
+            var resumed = await engine.ResumeAsync(instance, "manager", "approved", null, "resume-1");
+            Assert.Equal(("Resume", 2, "Completed"), (resumed.Reason, resumed.Sequence, resumed.Status));
+            var again = await Assert.ThrowsAsync<FlowOps.Api.Workflows.WorkflowRuntimeException>(() => engine.ResumeAsync(instance, "manager", "rejected", null, "resume-2"));
+            Assert.Equal("not_waiting", again.Code);
+        }
+        var finished = await studio.GetFromJsonAsync<JsonElement>($"/api/workflow-instances/{largeId}");
+        Assert.Equal(("Completed", "Approved", 1), (finished.GetProperty("status").GetString(), finished.GetProperty("outcome").GetString(), finished.GetProperty("version").GetProperty("versionNumber").GetInt32()));
+        var executions = finished.GetProperty("executions").EnumerateArray().ToList();
+        Assert.Equal(["Start", "Resume"], executions.Select(x => x.GetProperty("reason").GetString()));
+        Assert.Equal("resume-1", executions[1].GetProperty("correlationId").GetString());
+        Assert.Equal(["manager", "approved"], executions[1].GetProperty("steps").EnumerateArray().Select(x => x.GetProperty("nodeId").GetString()));
+        Assert.Equal("approved", executions[1].GetProperty("steps")[0].GetProperty("output").GetProperty("decision").GetString());
+
+        // New runs use v2. History lists every run, newest first, with its pinned version.
+        var latest = await (await StartRun(studio, workflowId, new { amount = 1 })).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(2, latest.GetProperty("version").GetProperty("versionNumber").GetInt32());
+        var history = await studio.GetFromJsonAsync<JsonElement>($"{path}/runs");
+        Assert.Equal(6, history.GetProperty("total").GetInt32());
+        Assert.Equal(latest.GetProperty("id").GetGuid(), history.GetProperty("items")[0].GetProperty("id").GetGuid());
+        Assert.Equal([2, 1, 1, 1, 1, 1], history.GetProperty("items").EnumerateArray().Select(x => x.GetProperty("versionNumber").GetInt32()));
+        Assert.Equal("workflow-run-owner", history.GetProperty("items")[0].GetProperty("startedBy").GetString());
+
+        // Other organizations and Portal accounts cannot see or start runs.
+        Assert.Equal(HttpStatusCode.NotFound, (await outsider.GetAsync($"/api/workflow-instances/{largeId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await outsider.GetAsync($"{path}/runs")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await StartRun(outsider, workflowId, new { amount = 1 })).StatusCode);
+        await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/members", new { email = "workflow-run-member@example.test", role = "Member" });
+        await Mutate(portal, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        Assert.Equal(HttpStatusCode.Forbidden, (await StartRun(portal, workflowId, new { amount = 1 })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await portal.GetAsync($"/api/workflow-instances/{largeId}")).StatusCode);
+
+        using var auditScope = _factory.Services.CreateScope();
+        var auditDb = auditScope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        var runIds = (await auditDb.WorkflowInstances.Where(x => x.WorkflowDefinitionId == workflowId).Select(x => x.Id).ToListAsync()).Select(x => x.ToString()).ToList();
+        var audits = await auditDb.AuditEvents.Where(x => x.SubjectId != null && runIds.Contains(x.SubjectId)).ToListAsync();
+        Assert.Equal(6, audits.Count(x => x.Action == "workflow.instance_started"));
+        Assert.Equal(4, audits.Count(x => x.Action == "workflow.instance_completed"));
+        Assert.Equal(2, audits.Count(x => x.Action == "workflow.instance_failed"));
+    }
+
+    [Fact]
+    public async Task Engine_stops_runaway_loops_and_runtime_history_is_immutable()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        var engine = scope.ServiceProvider.GetRequiredService<FlowOps.Api.Workflows.WorkflowEngine>();
+        var organization = new Organization { Name = "Runtime Guards" };
+        var workflow = new FlowOps.Api.Workflows.WorkflowDefinition { OrganizationId = organization.Id, Name = "Loop" };
+        // Publishing refuses cycles, so store a looping version directly to exercise the engine's step guard.
+        var graph = new FlowOps.Api.Workflows.WorkflowGraph(1,
+            [N("s", "Start", new(Trigger: "Manual")), N("a", "Condition", new(Expression: "true")), N("b", "Condition", new(Expression: "true")), N("e", "End")],
+            [C("s", "next", "a"), C("a", "true", "b"), C("a", "false", "e"), C("b", "true", "a"), C("b", "false", "e")]);
+        var version = new FlowOps.Api.Workflows.WorkflowVersion { WorkflowDefinitionId = workflow.Id, OrganizationId = organization.Id, VersionNumber = 1,
+            Status = FlowOps.Api.Workflows.WorkflowVersionStatus.Published, PublishedAt = DateTimeOffset.UtcNow, GraphJson = JsonSerializer.Serialize(graph) };
+        db.AddRange(organization, workflow, version);
+        await db.SaveChangesAsync();
+
+        var instance = await engine.StartAsync(new(workflow, version, "Manual", null, [], "loop-test"));
+        Assert.Equal(("Failed", "step_limit"), (instance.Status, instance.ErrorCode));
+        Assert.Equal(FlowOps.Api.Workflows.WorkflowEngine.MaxStepsPerExecution, await db.WorkflowExecutionSteps.CountAsync(x => x.InstanceId == instance.Id));
+        Assert.All(await db.WorkflowExecutionSteps.Where(x => x.InstanceId == instance.Id).ToListAsync(), x => Assert.Equal("loop-test", x.CorrelationId));
+
+        // Drafts cannot run.
+        var draft = new FlowOps.Api.Workflows.WorkflowVersion { WorkflowDefinitionId = workflow.Id, OrganizationId = organization.Id, VersionNumber = 2, GraphJson = version.GraphJson };
+        Assert.Equal("version_not_published", (await Assert.ThrowsAsync<FlowOps.Api.Workflows.WorkflowRuntimeException>(() => engine.StartAsync(new(workflow, draft, "Manual", null, [], "x")))).Code);
+
+        // Finished steps and executions cannot change, and instances never move to another version or disappear.
+        var step = await db.WorkflowExecutionSteps.FirstAsync(x => x.InstanceId == instance.Id);
+        step.OutputJson = "{}";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
+        db.ChangeTracker.Clear();
+        var execution = await db.WorkflowExecutions.SingleAsync(x => x.InstanceId == instance.Id);
+        db.Remove(execution);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
+        db.ChangeTracker.Clear();
+        instance = await db.WorkflowInstances.SingleAsync(x => x.Id == instance.Id);
+        instance.WorkflowVersionId = Guid.NewGuid();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
+        db.Entry(instance).Reload();
+        db.Remove(instance);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
     }
 
     // Test requests have no peer address; present them as coming from a co-located (loopback) proxy.

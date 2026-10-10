@@ -121,6 +121,36 @@ Slice 1 (publishing) is implemented on `feat/phase4-workflow-publishing`; automa
 
 No migration is needed; publishing uses the Phase 3 `WorkflowVersion` columns.
 
+## Slice 2: workflow runtime
+
+Implemented on `feat/phase4-workflow-runtime`; automated and browser checks passed on 2026-10-10. It includes:
+
+- the `WorkflowRuntime` migration: `WorkflowInstances`, `WorkflowExecutions` and `WorkflowExecutionSteps`, with the unique (version, form submission) index for slice 3 and a unique (workflow, user, Idempotency-Key) index for manual runs
+- `WorkflowEngine` with one `IWorkflowNodeHandler` per node type. Each activation is saved in one write: the instance state, the execution, every step and the audit events. Finished executions and steps are immutable, and an instance never changes its version or is deleted (DbContext guard).
+- Condition evaluation (`WorkflowExpression.Evaluate`): numbers, text, true/false and empty values. `&&` and `||` short-circuit. A missing variable (`variable_missing`), comparing different types or a non-true/false result (`type_mismatch`) fails the run.
+- Approval nodes leave the instance Waiting with `WaitingNodeId`. `WorkflowEngine.ResumeAsync` (internal, tested) adds a Resume execution that continues from the chosen output; the instance revision is a concurrency token.
+- `POST /api/workflows/{id}/runs` with `{ "request": { ... } }` and an optional `Idempotency-Key`. Only workflows whose latest Published version has a Manual trigger can be run manually (409 `trigger_not_manual`). A retry with the same key and values returns the same run (200); different values return 409 `idempotency_key_reused`.
+- `X-Correlation-ID` is taken from the request when well formed (otherwise generated), echoed on the response and stored on the instance, executions and steps.
+- `GET /api/workflows/{id}/runs` (25 per page, newest first) and `GET /api/workflow-instances/{id}` (pinned version graph, variables, executions and steps)
+- Studio: **Runs** (`/workflows/{id}/runs`) with a Start run form and history, and a run detail page with each execution’s steps, input/output and errors
+- audit events `workflow.instance_started`, `workflow.instance_completed` and `workflow.instance_failed`
+
+Run variables are `request.*` (the values sent with the run) and `trigger.type`/`trigger.startedAt`.
+
+## Internal test: workflow runtime
+
+Apply the migration (`dotnet ef database update -p backend/FlowOps.Api`) and restart the API and Studio first.
+
+1. Design a workflow: Start (Manual) → Condition `request.amount > 1000`. Connect true → Approval → End “Approved” / End “Rejected”, and false → End “Auto-approved”. Save and publish.
+2. Open **Runs** from the designer or the Workflows list (**View runs**).
+3. Start a run with `{ "amount": 250 }`: “Run completed: Auto-approved.” The run detail shows Start → Condition (output `result: false`) → End, all Completed.
+4. Start a run with `{ "amount": 5000 }`: the run is **Waiting** at the approval node.
+5. Start a run with `{ "total": 5 }`: the run **Failed** with `variable_missing`; with `{ "amount": "lots" }` it fails with `type_mismatch`. The failed step shows the error.
+6. Edit the draft, publish version 2, and start another run: it shows Version 2, while the earlier runs keep Version 1.
+7. Runs and run details are not visible from another organization, and a Portal account cannot start runs.
+
+Automated checks cover the expression evaluator, routing, the durable wait and resume (including wrong node/output and a second resume), structured failures, idempotent retries, version pinning across republishing, history paging data, organization and Portal isolation, audit events, the 200-step guard and runtime immutability.
+
 ## Internal test: workflow publishing
 
 1. Open a workflow's designer.
