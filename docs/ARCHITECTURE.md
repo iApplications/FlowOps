@@ -211,7 +211,7 @@ WorkflowExecutionStep
 
 ### ApprovalTask
 
-Represents approval work assigned to a user or role.
+Represents one approval request raised by one Approval node activation (Phase 5). The task snapshots the node's assignee role and instructions from the pinned version, is visible to organization members whose role satisfies that role, and is decided once (Pending → Approved, Rejected or ChangesRequested). Every step is kept in the append-only `ApprovalTaskEvent` history. See [Approval tasks (Phase 5)](#approval-tasks-phase-5).
 
 ### AuditEvent
 
@@ -529,6 +529,18 @@ Phase 4 implements this model in `WorkflowEngine` (`backend/FlowOps.Api/Workflow
 - **Correlation.** A well-formed `X-Correlation-ID` request header is used, otherwise one is generated; it is echoed on the response and stored on the instance, executions and steps.
 
 Instance statuses are Running, Waiting, Completed, Failed and Cancelled (Cancelled is reserved; nothing cancels a run yet). Executions and steps use Running, Waiting, Completed and Failed.
+
+### Approval tasks (Phase 5)
+
+Phase 5 puts people in front of the durable wait (`ApprovalEndpoints`, `MyRequestEndpoints`):
+
+- **Creation.** Reaching an Approval node writes an `ApprovalTask` and its `Created` event in the same save as the Waiting instance. A unique index allows one open task per (instance, node).
+- **Assignment.** Role claim: Owner satisfies every role, Admin satisfies Admin and Member, Member satisfies Member. Visibility is the caller's member role in the active organization; the requester never sees or decides their own task (403 `not_assignee`).
+- **Two surfaces, one API.** `/api/portal/tasks` serves Portal Members (Member-role tasks); `/api/tasks` serves Studio Owner/Admin under the MFA policy. Requester status (`/api/portal/my-requests`) is Portal only and read-only.
+- **Decision.** `POST …/decision` with `approve`, `reject` or `request_changes` and the task `revision`. Approve and Reject call `WorkflowEngine.ResumeAsync` in the same transaction as the task update; a stale revision is 409, so concurrent decisions have exactly one winner. Request changes requires a comment and leaves the instance Waiting.
+- **Resubmit.** The requester edits the original form values; they are validated against the pinned form version, the request values are replaced, and the task reopens as Pending at the same node. No graph change, so published versions are unaffected.
+- **History and audit.** Created, Approved, Rejected, ChangesRequested, Resubmitted and Commented are immutable `ApprovalTaskEvent` rows with matching `approval.*` audit events.
+- **Still synchronous.** Decisions resume the run in the request; there is no queue, notification or SLA until Phase 8.
 
 ---
 

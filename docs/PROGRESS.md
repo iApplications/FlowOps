@@ -16,7 +16,9 @@ Updated: 2026-10-10
 - Slice 1 (publishing) was merged into `dev/phase4_main` (#20).
 - Slice 2 (runtime) was merged into `dev/phase4_main` (#21).
 - Slice 3 (form trigger) was merged into `dev/phase4_main` (#22). Phase 4 is **implementation complete**.
-- Current work branch: `feat/phase4-acceptance` (slice 4: architecture notes, final checklist, docs). Automated checks (60 backend tests) and the final browser pass passed on 2026-10-10; PR into `dev/phase4_main`, then the merge into `main`, pending.
+- Phase 4 is **complete**: merged into `main` (#24).
+- Phase 5 integration branch: `dev/phase5_main`, created from `main` (`69ae568`). Plan in [Phase 5](PHASE5.md). Slice 1 (approval tasks, #25), slice 2 (Portal and Studio task inbox, #27) and slice 3 (requester status and resubmit, #28) are merged into it. Phase 5 is **implementation complete**.
+- Current work branch: `feat/phase5-acceptance` (slice 4: architecture notes, checklist, docs). Automated checks (62 backend tests) passed 2026-10-10; browser pass, PR into `dev/phase5_main` and the merge into `main` pending.
 - No automatic commits or pushes; each merge follows internal testing and user approval.
 
 ## Delivery progress
@@ -40,8 +42,12 @@ Updated: 2026-10-10
 | Phase 4 workflow publishing (slice 1) | Complete: publish API, immutable versions with next draft, Studio Publish button, published version in list | Automated and browser checks passed 2026-10-10; merged into Phase 4 (#20) |
 | Phase 4 workflow runtime (slice 2) | Complete: runtime tables, node handlers, condition evaluation, durable approval wait and internal resume, idempotent manual runs, run history API and Studio Runs pages | Automated and browser checks passed 2026-10-10; merged into Phase 4 (#21) |
 | Phase 4 form trigger (slice 3) | Implemented: form field keys, runs started from Portal submissions (idempotent per submission), `request.<key>` and `submission.*` variables | Automated and browser checks passed 2026-10-10; merged into Phase 4 (#22) |
-| Phase 4 final acceptance and merge to main | Docs and checklist on `feat/phase4-acceptance` | Automated and browser checks passed 2026-10-10; merge pending |
-| Phase 5 and later roadmap phases | Pending | Not started |
+| Phase 4 final acceptance and merge to main | Complete | Merged into main (#24) |
+| Phase 5 approval tasks (slice 1) | Complete: `ApprovalInbox` migration, task creation at Approval nodes, role-based decisions that resume the pinned run, comments, audit events | Automated checks passed 2026-10-10; merged into Phase 5 (#25) |
+| Phase 5 task inbox (slice 2) | Complete: Portal My Tasks, Studio Tasks, task detail with decision form and comments | Merged into Phase 5 (#27) |
+| Phase 5 requester status (slice 3) | Complete: My Requests, plain-language status, request changes and resubmit loop | Merged into Phase 5 (#28) |
+| Phase 5 final acceptance and merge to main | Docs and checklist on `feat/phase5-acceptance` | Automated checks passed 2026-10-10; browser pass and merge pending |
+| Phase 6 and later roadmap phases | Pending | Not started |
 
 ## Phase 2 roadmap deliverables
 

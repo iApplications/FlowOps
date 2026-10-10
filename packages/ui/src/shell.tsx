@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { CurrentUser } from "@flowops/types";
+import { AccountMenu } from "./account-menu";
 
 export function BrandMark({ label = "FlowOps" }: { label?: string }) {
   return <span className="brand"><span className="brand-symbol" aria-hidden="true"><i /><i /><i /></span>{label}</span>;
@@ -34,11 +35,13 @@ export function AuthFrame({ surface, title, intro, children }: {
   </main>;
 }
 
-type StudioSection = "overview" | "forms" | "workflows";
+type StudioSection = "overview" | "forms" | "workflows" | "tasks" | "requests";
 const studioHeadings: Record<StudioSection, { eyebrow: string; title: string; description: string }> = {
   overview: { eyebrow: "Organization foundation", title: "Workspace overview", description: "Manage access, people, and account security from one place." },
   forms: { eyebrow: "Form builder", title: "Forms", description: "Manage draft forms for your active organization." },
   workflows: { eyebrow: "Workflow designer", title: "Workflows", description: "Design draft workflows for your active organization." },
+  tasks: { eyebrow: "Approvals", title: "Tasks", description: "Decide approvals assigned to your role in the active organization." },
+  requests: { eyebrow: "Requests", title: "My requests", description: "Requests you started in the active organization." },
 };
 
 export function DashboardShell({ surface, user, children, section = "overview" }: {
@@ -59,6 +62,7 @@ export function DashboardShell({ surface, user, children, section = "overview" }
             <a href="/" aria-current={section === "overview" ? "page" : undefined}><span className="studio-nav-dot" />Overview</a>
             <a href="/forms" aria-current={section === "forms" ? "page" : undefined}><span className="studio-nav-dot" />Forms</a>
             <a href="/workflows" aria-current={section === "workflows" ? "page" : undefined}><span className="studio-nav-dot" />Workflows</a>
+            <a href="/tasks" aria-current={section === "tasks" ? "page" : undefined}><span className="studio-nav-dot" />Tasks</a>
             <a href="/#organizations"><span className="studio-nav-dot" />Organizations</a>
             <a href="/#members"><span className="studio-nav-dot" />People</a>
             <a href="/#security"><span className="studio-nav-dot" />Security</a>
@@ -69,12 +73,11 @@ export function DashboardShell({ surface, user, children, section = "overview" }
       <div className="studio-main" id="overview">
         <header className="studio-topbar">
           <small>Studio / {active?.name ?? "Getting started"}</small>
-          <span className="topbar-user"><span className="avatar" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span>{user.displayName}</span>
+          <AccountMenu user={user} />
         </header>
         <main className="studio-content">
           <div className="dashboard-heading">
             <div><p className="eyebrow">{studioHeadings[section].eyebrow}</p><h1>{studioHeadings[section].title}</h1><p>{studioHeadings[section].description}</p></div>
-            <span className="status-chip">Phase 3 · Workflow designer</span>
           </div>
           {section === "overview" && <section className="studio-hero">
             <div><p className="eyebrow">{active ? "Current workspace" : "Get started"}</p>
@@ -92,18 +95,18 @@ export function DashboardShell({ surface, user, children, section = "overview" }
   return <div className="portal-layout">
     <header className="portal-header">
       <BrandMark label="FlowOps Portal" />
-      <nav className="designer-actions" aria-label="Portal sections"><a className="btn" href="/" aria-current={section === "overview" ? "page" : undefined}>Overview</a><a className="btn" href="/forms" aria-current={section === "forms" ? "page" : undefined}>Forms</a></nav>
-      <span className="portal-header-note">Your space for requests and approvals</span>
+      <nav className="designer-actions" aria-label="Portal sections"><a className="btn" href="/" aria-current={section === "overview" ? "page" : undefined}>Overview</a><a className="btn" href="/forms" aria-current={section === "forms" ? "page" : undefined}>Forms</a><a className="btn" href="/tasks" aria-current={section === "tasks" ? "page" : undefined}>Tasks</a><a className="btn" href="/requests" aria-current={section === "requests" ? "page" : undefined}>My requests</a></nav>
+      <AccountMenu user={user} />
     </header>
     <main className="portal-content">
-      <div className="portal-heading"><div><p className="eyebrow">Your workspace</p><h1>{section === "forms" ? "Forms" : `Good to see you, ${name}.`}</h1><p>{section === "forms" ? "View published forms from your active organization." : "Manage your account, security and assigned organizations."}</p></div></div>
-      <section className="portal-hero">
+      <div className={section === "overview" ? "portal-heading" : "portal-heading portal-heading-compact"}><div><p className="eyebrow">Your workspace</p><h1>{section === "forms" ? "Forms" : section === "tasks" ? "Tasks" : section === "requests" ? "My requests" : `Good to see you, ${name}.`}</h1><p>{section === "forms" ? "View published forms from your active organization." : section === "tasks" ? "Approvals waiting for you and your decision history." : section === "requests" ? "Where the requests you submitted stand, and what approvers said." : "Manage your account, security and assigned organizations."}</p></div></div>
+      {section === "overview" && <section className="portal-hero">
         <div><p className="eyebrow">{active ? "You are in" : "Your next step"}</p>
           <h2>{active ? active.name : "Join your organization"}</h2>
           <p>{active ? `You have ${active.role.toLowerCase()} access here. Open Forms to view what your organization has published.` : "Ask your organization administrator to add your confirmed email address through Studio."}</p>
         </div>
         <div className="portal-hero-art" aria-hidden="true"><span /></div>
-      </section>
+      </section>}
       {children}
     </main>
   </div>;

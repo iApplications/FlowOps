@@ -232,6 +232,8 @@ app.MapOrganizationEndpoints();
 FlowOps.Api.Forms.FormEndpoints.MapFormEndpoints(app);
 FlowOps.Api.Workflows.WorkflowEndpoints.MapWorkflowEndpoints(app);
 FlowOps.Api.Workflows.WorkflowRunEndpoints.MapWorkflowRunEndpoints(app);
+FlowOps.Api.Workflows.ApprovalEndpoints.MapApprovalEndpoints(app);
+FlowOps.Api.Workflows.MyRequestEndpoints.MapMyRequestEndpoints(app);
 app.MapGet("/api/health", () => Results.Ok(new ApiHealthResponse("Healthy", "FlowOps.Api")))
     .WithName("GetApiHealth")
     .WithSummary("Check the FlowOps API status")

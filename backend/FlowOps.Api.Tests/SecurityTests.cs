@@ -1445,6 +1445,203 @@ public sealed class SecurityTests : IAsyncLifetime
         Assert.Equal((false, "expression_invalid"), Eval("request.amount >"));
     }
 
+    [Fact]
+    public async Task Approval_tasks_are_role_scoped_decided_once_and_resume_the_pinned_run()
+    {
+        using var studio = NewClient();
+        using var admin = NewClient();
+        using var member = NewClient();
+        using var other = NewClient();
+        await RegisterAndLogin(studio, "task-owner@example.test");
+        await RegisterAndLogin(admin, "task-admin@example.test");
+        await RegisterAndLogin(member, "task-member@example.test", "Portal");
+        await RegisterAndLogin(other, "task-other@example.test", "Portal");
+        var organization = await CreateOrganization(studio, "Approval Workspace");
+        var setup = await studio.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+        await Mutate(studio, HttpMethod.Post, "/api/auth/mfa/enable", new { code = AuthenticatorCode(setup.GetProperty("sharedKey").GetString()!) });
+        var adminSetup = await admin.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+        await Mutate(admin, HttpMethod.Post, "/api/auth/mfa/enable", new { code = AuthenticatorCode(adminSetup.GetProperty("sharedKey").GetString()!) });
+        foreach (var (email, role) in new[] { ("task-admin@example.test", "Admin"), ("task-member@example.test", "Member") })
+            Assert.Equal(HttpStatusCode.Created, (await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/members", new { email, role })).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await Mutate(admin, HttpMethod.Post, $"/api/organizations/{organization}/activate")).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await Mutate(member, HttpMethod.Post, $"/api/organizations/{organization}/activate")).StatusCode);
+        var created = await (await Mutate(studio, HttpMethod.Post, "/api/workflows", new { name = "Expense approval" })).Content.ReadFromJsonAsync<JsonElement>();
+        var workflowId = created.GetProperty("id").GetGuid();
+        var path = $"/api/workflows/{workflowId}";
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"{path}/draft", new { graph = new { schemaVersion = 1, nodes = RunnableNodes(), connections = RunnableLinks }, draftRevision = 0 })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Post, $"{path}/publish", new { draftRevision = 1 })).StatusCode);
+
+        var runs = new List<Guid>();
+        foreach (var amount in new[] { 2000, 3000, 4000 })
+            runs.Add((await (await StartRun(studio, workflowId, new { amount })).Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid());
+        // An auto-approved run raises no task.
+        await StartRun(studio, workflowId, new { amount = 5 });
+
+        // The Admin-role task is visible to the Admin only; a Member and other accounts see nothing.
+        var inbox = await admin.GetFromJsonAsync<JsonElement>("/api/tasks");
+        Assert.Equal(3, inbox.GetProperty("total").GetInt32());
+        Assert.Equal("Expense approval", inbox.GetProperty("items")[0].GetProperty("workflow").GetString());
+        Assert.Equal(0, (await member.GetFromJsonAsync<JsonElement>("/api/portal/tasks")).GetProperty("total").GetInt32());
+        var taskIds = inbox.GetProperty("items").EnumerateArray().Select(x => x.GetProperty("id").GetGuid()).ToList();
+        Assert.Equal(HttpStatusCode.NotFound, (await member.GetAsync($"/api/portal/tasks/{taskIds[0]}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Mutate(member, HttpMethod.Post, $"/api/portal/tasks/{taskIds[0]}/decision", new { decision = "approve", revision = 0 })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await member.GetAsync("/api/tasks")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await studio.GetAsync("/api/portal/tasks")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await other.GetAsync("/api/portal/tasks")).StatusCode);
+
+        var detail = await admin.GetFromJsonAsync<JsonElement>($"/api/tasks/{taskIds[0]}");
+        Assert.True(detail.GetProperty("canDecide").GetBoolean());
+        Assert.Equal("Created", detail.GetProperty("history")[0].GetProperty("kind").GetString());
+        Assert.True(detail.GetProperty("request").GetProperty("amount").GetInt32() >= 2000);
+
+        // Unknown decisions, a missing comment on request-changes and a stale revision are refused.
+        var decisionPath = $"/api/tasks/{taskIds[0]}/decision";
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(admin, HttpMethod.Post, decisionPath, new { decision = "maybe", revision = 0 })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(admin, HttpMethod.Post, decisionPath, new { decision = "request_changes", revision = 0 })).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(admin, HttpMethod.Post, decisionPath, new { decision = "approve", revision = 9 })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(admin, HttpMethod.Post, $"/api/tasks/{taskIds[0]}/comments", new { comment = "Checking receipts" })).StatusCode);
+
+        // Approve: the task is decided and the run resumes and completes; a second decision loses.
+        var approved = await Mutate(admin, HttpMethod.Post, decisionPath, new { decision = "approve", comment = "Looks fine", revision = 0 });
+        Assert.Equal(HttpStatusCode.OK, approved.StatusCode);
+        var approvedBody = await approved.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Approved", approvedBody.GetProperty("status").GetString());
+        Assert.Equal(["Created", "Commented", "Approved"], approvedBody.GetProperty("history").EnumerateArray().Select(x => x.GetProperty("kind").GetString()));
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(admin, HttpMethod.Post, decisionPath, new { decision = "reject", revision = 1 })).StatusCode);
+
+        // Reject routes the rejected output; request changes keeps the run waiting.
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(admin, HttpMethod.Post, $"/api/tasks/{taskIds[1]}/decision", new { decision = "reject", revision = 0 })).StatusCode);
+        var changes = await Mutate(admin, HttpMethod.Post, $"/api/tasks/{taskIds[2]}/decision", new { decision = "request_changes", comment = "Attach the invoice", revision = 0 });
+        Assert.Equal(HttpStatusCode.OK, changes.StatusCode);
+        Assert.Equal("ChangesRequested", (await changes.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("status").GetString());
+        Assert.Equal(0, (await admin.GetFromJsonAsync<JsonElement>("/api/tasks")).GetProperty("total").GetInt32());
+        Assert.Equal(2, (await admin.GetFromJsonAsync<JsonElement>("/api/tasks?status=decided")).GetProperty("total").GetInt32());
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        var instances = await db.WorkflowInstances.Where(x => runs.Contains(x.Id)).ToDictionaryAsync(x => x.Id);
+        Assert.Equal(("Completed", "Approved"), (instances[runs[0]].Status, instances[runs[0]].Outcome));
+        Assert.Equal(("Completed", "Rejected"), (instances[runs[1]].Status, instances[runs[1]].Outcome));
+        Assert.Equal(("Waiting", "manager"), (instances[runs[2]].Status, instances[runs[2]].WaitingNodeId));
+        foreach (var action in new[] { "approval.task_created", "approval.approved", "approval.rejected", "approval.changes_requested", "approval.commented" })
+            Assert.True(await db.AuditEvents.AnyAsync(x => x.OrganizationId == organization && x.Action == action), action);
+
+        // Requesters never decide their own tasks, even with a satisfying role.
+        var requesterRun = (await (await StartRun(studio, workflowId, new { amount = 9000 })).Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var adminUser = await db.Users.SingleAsync(x => x.Email == "task-admin@example.test");
+        var ownTask = await db.ApprovalTasks.SingleAsync(x => x.WorkflowInstanceId == requesterRun);
+        ownTask.RequesterUserId = adminUser.Id;
+        await db.SaveChangesAsync();
+        var self = await Mutate(admin, HttpMethod.Post, $"/api/tasks/{ownTask.Id}/decision", new { decision = "approve", revision = 0 });
+        Assert.Equal(HttpStatusCode.Forbidden, self.StatusCode);
+        Assert.Equal("not_assignee", (await self.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task Requesters_track_their_runs_and_resubmit_after_changes_are_requested()
+    {
+        using var studio = NewClient();
+        using var requester = NewClient();
+        using var other = NewClient();
+        await RegisterAndLogin(studio, "resubmit-owner@example.test");
+        await RegisterAndLogin(requester, "resubmit-requester@example.test", "Portal");
+        await RegisterAndLogin(other, "resubmit-other@example.test", "Portal");
+        var organization = await CreateOrganization(studio, "Resubmit Workspace");
+        var setup = await studio.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+        await Mutate(studio, HttpMethod.Post, "/api/auth/mfa/enable", new { code = AuthenticatorCode(setup.GetProperty("sharedKey").GetString()!) });
+        foreach (var email in new[] { "resubmit-requester@example.test", "resubmit-other@example.test" })
+            Assert.Equal(HttpStatusCode.Created, (await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/members", new { email, role = "Member" })).StatusCode);
+        await Mutate(requester, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        await Mutate(other, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+
+        var formId = (await (await Mutate(studio, HttpMethod.Post, "/api/forms", new { name = "Expense claim" })).Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var amountId = Guid.NewGuid();
+        var notesId = Guid.NewGuid();
+        var fields = new List<FlowOps.Api.Forms.FormField> { new(amountId, "Currency", "Amount (USD)", true), new(notesId, "Text", "Notes") };
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"/api/forms/{formId}/fields", new { fields, draftRevision = 0 })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Post, $"/api/forms/{formId}/publish", new { draftRevision = 1 })).StatusCode);
+        var publicationId = (await requester.GetFromJsonAsync<JsonElement>($"/api/portal/forms/{formId}")).GetProperty("id").GetGuid();
+        var workflowId = (await (await Mutate(studio, HttpMethod.Post, "/api/workflows", new { name = "Expense approval" })).Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var nodes = RunnableNodes().Select((node, index) => index switch
+        {
+            0 => Node("start", "Start", "Start", new { trigger = "FormSubmitted", formId }),
+            1 => Node("check", "Condition", "Large amount?", new { expression = "request.amountUsd > 1000" }, 250),
+            _ => node
+        }).ToArray();
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"/api/workflows/{workflowId}/draft", new { graph = new { schemaVersion = 1, nodes, connections = RunnableLinks }, draftRevision = 0 })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Post, $"/api/workflows/{workflowId}/publish", new { draftRevision = 1 })).StatusCode);
+
+        using (var message = new HttpRequestMessage(HttpMethod.Post, $"/api/portal/forms/{formId}/submissions")
+        {
+            Content = JsonContent.Create(new { publicationId, requestId = Guid.NewGuid(), values = new Dictionary<Guid, object> { [amountId] = 5000, [notesId] = "Flights" } })
+        })
+        {
+            var csrf = await requester.GetFromJsonAsync<JsonElement>("/api/auth/csrf");
+            message.Headers.Add("X-CSRF-TOKEN", csrf.GetProperty("requestToken").GetString());
+            Assert.Equal(HttpStatusCode.Created, (await requester.SendAsync(message)).StatusCode);
+        }
+
+        // The requester sees the run and where it is waiting; nobody else sees it, and Studio has no My Requests.
+        var list = await requester.GetFromJsonAsync<JsonElement>("/api/portal/my-requests");
+        Assert.Equal(1, list.GetProperty("total").GetInt32());
+        var item = list.GetProperty("items")[0];
+        Assert.Equal(("Expense approval", "Waiting", "Waiting for Admin approval", "Manager approval"), (item.GetProperty("workflow").GetString(),
+            item.GetProperty("status").GetString(), item.GetProperty("headline").GetString(), item.GetProperty("currentStep").GetString()));
+        var instanceId = item.GetProperty("id").GetGuid();
+        var taskId = item.GetProperty("openTaskId").GetGuid();
+        Assert.Equal(0, (await other.GetFromJsonAsync<JsonElement>("/api/portal/my-requests")).GetProperty("total").GetInt32());
+        Assert.Equal(HttpStatusCode.NotFound, (await other.GetAsync($"/api/portal/my-requests/{instanceId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await studio.GetAsync("/api/portal/my-requests")).StatusCode);
+        var tracked = await requester.GetFromJsonAsync<JsonElement>($"/api/portal/my-requests/{instanceId}");
+        Assert.Equal(5000, tracked.GetProperty("request").GetProperty("amountUsd").GetInt32());
+        Assert.Equal(["Created"], tracked.GetProperty("approvals")[0].GetProperty("history").EnumerateArray().Select(x => x.GetProperty("kind").GetString()));
+
+        // Nothing to resubmit until changes are requested.
+        var resubmit = $"/api/portal/tasks/{taskId}/resubmit";
+        Assert.False((await requester.GetFromJsonAsync<JsonElement>($"/api/portal/tasks/{taskId}")).GetProperty("canResubmit").GetBoolean());
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(requester, HttpMethod.Post, resubmit, new { values = new { amountUsd = 10 }, revision = 0 })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Post, $"/api/tasks/{taskId}/decision", new { decision = "request_changes", comment = "Amount looks too high", revision = 0 })).StatusCode);
+        var waiting = await requester.GetFromJsonAsync<JsonElement>($"/api/portal/my-requests/{instanceId}");
+        Assert.Equal(("Changes requested", "Waiting"), (waiting.GetProperty("headline").GetString(), waiting.GetProperty("status").GetString()));
+
+        // Only the requester resubmits, with valid values for the form version they submitted, against the current revision.
+        var detail = await requester.GetFromJsonAsync<JsonElement>($"/api/portal/tasks/{taskId}");
+        Assert.True(detail.GetProperty("canResubmit").GetBoolean());
+        Assert.Equal(["amountUsd", "notes"], detail.GetProperty("fields").EnumerateArray().Select(x => x.GetProperty("key").GetString()));
+        Assert.False((await studio.GetFromJsonAsync<JsonElement>($"/api/tasks/{taskId}")).GetProperty("canResubmit").GetBoolean());
+        var notRequester = await Mutate(studio, HttpMethod.Post, $"/api/tasks/{taskId}/resubmit", new { values = new { amountUsd = 10 }, revision = 1 });
+        Assert.Equal(HttpStatusCode.Forbidden, notRequester.StatusCode);
+        Assert.Equal("not_requester", (await notRequester.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+        Assert.Equal(HttpStatusCode.NotFound, (await Mutate(other, HttpMethod.Post, $"/api/portal/tasks/{taskId}/resubmit", new { values = new { amountUsd = 10 }, revision = 1 })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(requester, HttpMethod.Post, resubmit, new { values = new { amountUsd = "lots" }, revision = 1 })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(requester, HttpMethod.Post, resubmit, new { values = new { amountUsd = 10, surprise = 1 }, revision = 1 })).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(requester, HttpMethod.Post, resubmit, new { values = new { amountUsd = 10 }, revision = 0 })).StatusCode);
+
+        var reopened = await Mutate(requester, HttpMethod.Post, resubmit, new { values = new { amountUsd = 4500, notes = "Flights, corrected" }, comment = "Fixed the amount", revision = 1 });
+        Assert.Equal(HttpStatusCode.OK, reopened.StatusCode);
+        var reopenedBody = await reopened.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Pending", reopenedBody.GetProperty("status").GetString());
+        Assert.Equal(4500, reopenedBody.GetProperty("request").GetProperty("amountUsd").GetInt32());
+        Assert.Equal(["Created", "ChangesRequested", "Resubmitted"], reopenedBody.GetProperty("history").EnumerateArray().Select(x => x.GetProperty("kind").GetString()));
+        // The same revision cannot resubmit twice, and the approver sees the task again with the revised values.
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(requester, HttpMethod.Post, resubmit, new { values = new { amountUsd = 10 }, revision = 1 })).StatusCode);
+        var again = await studio.GetFromJsonAsync<JsonElement>("/api/tasks");
+        Assert.Equal(taskId, again.GetProperty("items")[0].GetProperty("id").GetGuid());
+        Assert.Equal(4500, (await studio.GetFromJsonAsync<JsonElement>($"/api/tasks/{taskId}")).GetProperty("request").GetProperty("amountUsd").GetInt32());
+
+        // A second decision completes the run on the same pinned version; the requester sees the outcome and full history.
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Post, $"/api/tasks/{taskId}/decision", new { decision = "approve", revision = 2 })).StatusCode);
+        var done = await requester.GetFromJsonAsync<JsonElement>($"/api/portal/my-requests/{instanceId}");
+        Assert.Equal(("Completed", "Approved", "Approved"), (done.GetProperty("status").GetString(), done.GetProperty("outcome").GetString(), done.GetProperty("headline").GetString()));
+        Assert.Equal(["Created", "ChangesRequested", "Resubmitted", "Approved"],
+            done.GetProperty("approvals")[0].GetProperty("history").EnumerateArray().Select(x => x.GetProperty("kind").GetString()));
+        Assert.Equal(JsonValueKind.Null, done.GetProperty("openTaskId").ValueKind);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        Assert.True(await db.AuditEvents.AnyAsync(x => x.OrganizationId == organization && x.Action == "approval.resubmitted"));
+    }
+
     // Start (manual) → Condition request.amount > 1000 → Approval or straight to an auto-approved End.
     private static object[] RunnableNodes(string approvedOutcome = "Approved") =>
     [

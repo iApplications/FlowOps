@@ -115,7 +115,12 @@ public static partial class WorkflowRunEndpoints
         var executions = await db.WorkflowExecutions.AsNoTracking().Where(x => x.InstanceId == instance.Id).OrderBy(x => x.Sequence).ToListAsync();
         var steps = (await db.WorkflowExecutionSteps.AsNoTracking().Where(x => x.InstanceId == instance.Id).ToListAsync())
             .ToLookup(x => x.ExecutionId);
-        var userIds = executions.Select(x => x.TriggeredByUserId).Append(instance.StartedByUserId).OfType<string>().Distinct().ToList();
+        var tasks = await db.ApprovalTasks.AsNoTracking().Where(x => x.WorkflowInstanceId == instance.Id).OrderBy(x => x.CreatedAt).ToListAsync();
+        var taskIds = tasks.Select(x => x.Id).ToList();
+        var taskEvents = (await db.ApprovalTaskEvents.AsNoTracking().Where(x => taskIds.Contains(x.TaskId)).ToListAsync())
+            .OrderBy(x => x.CreatedAt).ThenBy(x => x.Id).ToLookup(x => x.TaskId);
+        var userIds = executions.Select(x => x.TriggeredByUserId).Append(instance.StartedByUserId).Concat(taskEvents.SelectMany(x => x).Select(x => x.ActorUserId))
+            .OfType<string>().Distinct().ToList();
         var names = await db.Users.AsNoTracking().Where(x => userIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.DisplayName);
         string? Name(string? userId) => userId is not null && names.TryGetValue(userId, out var name) ? name : null;
         static JsonNode? Parse(string? json) => json is null ? null : JsonNode.Parse(json);
@@ -125,6 +130,11 @@ public static partial class WorkflowRunEndpoints
             instance.Status, instance.Outcome, instance.Trigger, instance.WaitingNodeId, StartedBy = Name(instance.StartedByUserId),
             instance.SourceSubmissionId, instance.CorrelationId, instance.StartedAt, instance.CompletedAt, instance.ErrorCode, instance.ErrorMessage,
             Variables = Parse(instance.ContextJson),
+            Approvals = tasks.Select(task => new
+            {
+                task.Id, task.NodeId, task.Status, task.AssigneeRole, task.CreatedAt, task.DecidedAt,
+                History = taskEvents[task.Id].Select(e => new { e.Id, e.Kind, Actor = Name(e.ActorUserId), e.Comment, e.CreatedAt })
+            }),
             Executions = executions.Select(execution => new
             {
                 execution.Id, execution.Sequence, execution.Reason, execution.Status, TriggeredBy = Name(execution.TriggeredByUserId),
