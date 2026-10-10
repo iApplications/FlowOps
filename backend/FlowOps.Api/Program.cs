@@ -30,6 +30,7 @@ builder.Services.AddSingleton<FlowOps.Api.Workflows.IWorkflowNodeHandler, FlowOp
 builder.Services.AddSingleton<FlowOps.Api.Workflows.IWorkflowNodeHandler, FlowOps.Api.Workflows.ApprovalNodeHandler>();
 builder.Services.AddSingleton<FlowOps.Api.Workflows.IWorkflowNodeHandler, FlowOps.Api.Workflows.EndNodeHandler>();
 builder.Services.AddScoped<FlowOps.Api.Workflows.WorkflowEngine>();
+builder.Services.AddScoped<FlowOps.Api.Workflows.FormWorkflowTrigger>();
 builder.Services.AddAuthorization(options =>
 {
     foreach (var permission in new[] { Permissions.StudioAccess, Permissions.PortalAccess, Permissions.MembersManage })

@@ -27,6 +27,8 @@ export type FormField = {
   maxLength?: number | null; min?: number | null; max?: number | null;
   minDate?: string | null; maxDate?: string | null; options?: string[] | null;
   maxFileSizeMb?: number | null; acceptedExtensions?: string[] | null;
+  // Name used by workflow conditions (request.<key>); generated from the label when saved without one.
+  key?: string | null;
 };
 export type FormDraft = { id: string; name: string; description: string; fields: FormField[]; draftRevision: number; publicationCount: number; hasUnpublishedChanges?: boolean | null };
 export type PublishedForm = { id: string; formId: string; name: string; description: string; fields: FormField[]; versionNumber: number; publishedAt: string };

@@ -88,7 +88,8 @@ export function WorkflowRunDetail({ run }: { run: RunDetail }) {
   return <>
     <section className="panel-card" style={{ marginBottom: 24 }}>
       <div className="panel-header"><div><span className="panel-kicker">{run.workflow.name} · Version {run.version.versionNumber}</span><h2>Run {run.status.toLowerCase()}{run.outcome ? `: ${run.outcome}` : ""}</h2>
-        <p>Started {when(run.startedAt)}{run.startedBy ? ` by ${run.startedBy}` : ""} · {run.trigger === "Manual" ? "Manual" : "Form submitted"} · Finished {when(run.completedAt)}</p></div>
+        <p>Started {when(run.startedAt)}{run.startedBy ? ` by ${run.startedBy}` : ""} · {run.trigger === "Manual" ? "Manual" : "Form submitted"} · Finished {when(run.completedAt)}</p>
+        {run.sourceSubmissionId && <p className="helper">Submission <code>{run.sourceSubmissionId}</code></p>}</div>
         <span className={statusTag(run.status)}>{run.status}</span></div>
       {run.status === "Waiting" && run.waitingNodeId && <p className="notice">Waiting at <strong>{labels.get(run.waitingNodeId) ?? run.waitingNodeId}</strong>. Approval tasks arrive in a later phase.</p>}
       {run.errorMessage && <p className="notice" role="alert"><strong>{run.errorCode}</strong>: {run.errorMessage}</p>}

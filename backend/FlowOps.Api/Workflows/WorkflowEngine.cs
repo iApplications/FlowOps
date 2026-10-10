@@ -74,7 +74,7 @@ public sealed class WorkflowRuntimeException(string code, string message) : Exce
 }
 
 public sealed record StartRun(WorkflowDefinition Workflow, WorkflowVersion Version, string Trigger, string? UserId, JsonObject Request,
-    string CorrelationId, Guid? SourceSubmissionId = null, string? IdempotencyKey = null, string? RequestFingerprint = null);
+    string CorrelationId, Guid? SourceSubmissionId = null, string? IdempotencyKey = null, string? RequestFingerprint = null, JsonObject? Submission = null);
 
 // Runs published workflow versions synchronously within the calling request (PHASE4 decision 3). Each
 // activation is one WorkflowExecution; every node it runs is persisted as a WorkflowExecutionStep together
@@ -102,6 +102,7 @@ public sealed class WorkflowEngine(FlowOpsDbContext db, IEnumerable<IWorkflowNod
             ["request"] = run.Request.DeepClone(),
             ["trigger"] = new JsonObject { ["type"] = run.Trigger, ["startedAt"] = instance.StartedAt.ToString("O") }
         };
+        if (run.Submission is not null) variables["submission"] = run.Submission.DeepClone();
         db.WorkflowInstances.Add(instance);
         AuditService.Append(db, "workflow.instance_started", run.UserId, instance.Id.ToString(), instance.OrganizationId);
         var graph = run.Version.Graph;

@@ -12,7 +12,7 @@ import { apiRequest } from "@flowops/api-client";
 // summary and issueCount are display-only values derived at render time; they are never saved.
 type NodeData = { label: string; nodeType: WorkflowNodeType; config: WorkflowNodeConfig; summary?: string; issueCount?: number };
 type FlowNode = Node<NodeData>;
-type FormOption = { id: string; name: string; publicationCount: number };
+type FormOption = { id: string; name: string; publicationCount: number; fields?: { id: string; label: string; key?: string | null }[] };
 
 const nodeTypeOrder: WorkflowNodeType[] = ["Start", "Condition", "Approval", "End"];
 // Output handles per node type; must match WorkflowGraphValidation.OutputHandles on the server.
@@ -101,6 +101,9 @@ function Designer({ initialWorkflow }: { initialWorkflow: WorkflowDetail }) {
   const { screenToFlowPosition, fitView } = useReactFlow();
   const selected = nodes.find(node => node.id === selectedId);
   const hasStart = nodes.some(node => node.data.nodeType === "Start");
+  // Field keys of the form that starts this workflow, as hints for Condition expressions.
+  const startConfig = nodes.find(node => node.data.nodeType === "Start")?.data.config;
+  const triggerFields = (startConfig?.trigger === "FormSubmitted" ? forms.find(form => form.id === startConfig.formId)?.fields ?? [] : []).filter(field => field.key);
 
   useEffect(() => {
     let cancelled = false;
@@ -268,7 +271,8 @@ function Designer({ initialWorkflow }: { initialWorkflow: WorkflowDetail }) {
             {forms.map(form => <option key={form.id} value={form.id}>{form.name}{form.publicationCount ? "" : " (not published yet)"}</option>)}</select></label>}
         </>}
         {selected.data.nodeType === "Condition" && <label className="field">Expression<textarea maxLength={500} value={config.expression ?? ""} disabled={busy} placeholder="request.amount >= 500" onChange={event => update({ config: { expression: event.target.value } })} />
-          <small className="helper">Compare workflow values with ==, !=, &lt;, &lt;=, &gt;, &gt;= and combine with &amp;&amp;, ||, !. No code is run.</small></label>}
+          <small className="helper">Compare workflow values with ==, !=, &lt;, &lt;=, &gt;, &gt;= and combine with &amp;&amp;, ||, !. No code is run.</small>
+          {triggerFields.length > 0 && <small className="helper">Form values: {triggerFields.map((field, index) => <span key={field.id}>{index > 0 && ", "}<code title={field.label}>request.{field.key}</code></span>)}</small>}</label>}
         {selected.data.nodeType === "Approval" && <>
           <label className="field">Approver role<select value={config.assigneeRole ?? ""} disabled={busy} onChange={event => update({ config: { assigneeRole: (event.target.value || null) as WorkflowNodeConfig["assigneeRole"] } })}>
             {Object.keys(roleLabels).map(role => <option key={role} value={role}>{role}</option>)}</select></label>
