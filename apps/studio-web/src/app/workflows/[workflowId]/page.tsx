@@ -25,7 +25,7 @@ export default async function WorkflowDesignerPage({ params }: { params: Promise
   const workflow = await response.json() as WorkflowDetail;
   if (!workflow.draft) return <SurfaceShell title="No editable draft" description="This workflow has no draft version to design."><Link className="btn" href="/workflows">Back to Workflows</Link></SurfaceShell>;
   return <DashboardShell surface="Studio" user={user} section="workflows">
-    <div className="designer-actions form-navigation"><Link className="btn" href="/workflows">Back to Workflows</Link></div>
+    <div className="designer-actions form-navigation"><Link className="btn" href="/workflows">Back to Workflows</Link><Link className="btn" href={`/workflows/${workflow.id}/runs`}>Runs</Link></div>
     <WorkflowDesigner key={`${workflow.id}-${workflow.draft.id}`} initialWorkflow={workflow} />
   </DashboardShell>;
 }

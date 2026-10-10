@@ -52,3 +52,21 @@ export type WorkflowDraftVersion = { id: string; versionNumber: number; status: 
 export type WorkflowPublishedVersion = { id: string; versionNumber: number; publishedAt: string };
 export type WorkflowDetail = Omit<WorkflowSummary, "draftVersionNumber" | "issueCount" | "latestPublishedVersionNumber">
   & { draft: WorkflowDraftVersion | null; latestPublished: WorkflowPublishedVersion | null };
+export type WorkflowRunStatus = "Running" | "Waiting" | "Completed" | "Failed" | "Cancelled";
+export type WorkflowRunSummary = {
+  id: string; versionNumber: number; status: WorkflowRunStatus; outcome: string | null; trigger: "Manual" | "FormSubmitted"; waitingNodeId: string | null;
+  startedBy: string | null; startedAt: string; completedAt: string | null; errorCode: string | null; errorMessage: string | null; correlationId: string;
+};
+export type WorkflowRunPage = { items: WorkflowRunSummary[]; total: number; page: number; pageSize: number };
+export type WorkflowRunStep = {
+  id: string; sequence: number; nodeId: string; nodeType: WorkflowNodeType; status: "Running" | "Waiting" | "Completed" | "Failed"; attempt: number;
+  input: unknown; output: unknown; durationMs: number; errorCode: string | null; errorMessage: string | null; startedAt: string; completedAt: string | null;
+};
+export type WorkflowRunExecution = {
+  id: string; sequence: number; reason: "Start" | "Resume"; status: "Running" | "Waiting" | "Completed" | "Failed"; triggeredBy: string | null;
+  correlationId: string; startedAt: string; completedAt: string | null; errorCode: string | null; errorMessage: string | null; steps: WorkflowRunStep[];
+};
+export type WorkflowRunDetail = Omit<WorkflowRunSummary, "versionNumber"> & {
+  workflow: { id: string; name: string }; version: { id: string; versionNumber: number; publishedAt: string; graph: WorkflowGraph };
+  sourceSubmissionId: string | null; variables: Record<string, unknown>; executions: WorkflowRunExecution[];
+};
