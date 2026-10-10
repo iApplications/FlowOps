@@ -189,9 +189,24 @@ public sealed class WorkflowEngine(FlowOpsDbContext db, IEnumerable<IWorkflowNod
                     continue;
                 }
             }
+            if (result.Kind == NodeResultKind.Wait && node.Type == WorkflowNodeTypes.Approval) RaiseApprovalTask(instance, node, execution.CorrelationId);
             Finish(instance, execution, variables, result, step);
             return;
         }
+    }
+
+    // Reaching an Approval node raises one task in the same save as the Waiting instance (PHASE5).
+    private void RaiseApprovalTask(WorkflowInstance instance, WorkflowNode node, string correlationId)
+    {
+        var task = new ApprovalTask
+        {
+            OrganizationId = instance.OrganizationId, WorkflowInstanceId = instance.Id, WorkflowVersionId = instance.WorkflowVersionId, NodeId = node.Id,
+            AssigneeRole = node.Config?.AssigneeRole ?? OrganizationRoles.Admin, Instructions = node.Config?.Instructions,
+            RequesterUserId = instance.StartedByUserId, CorrelationId = correlationId
+        };
+        db.ApprovalTasks.Add(task);
+        db.ApprovalTaskEvents.Add(new() { TaskId = task.Id, OrganizationId = task.OrganizationId, Kind = ApprovalEventKind.Created, ActorUserId = instance.StartedByUserId });
+        AuditService.Append(db, "approval.task_created", instance.StartedByUserId, task.Id.ToString(), task.OrganizationId);
     }
 
     private void Finish(WorkflowInstance instance, WorkflowExecution execution, JsonObject variables, NodeResult result, WorkflowExecutionStep? step)
