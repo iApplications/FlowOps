@@ -86,8 +86,20 @@ export type ApprovalTaskDetail = {
   id: string; status: ApprovalTaskStatus; assigneeRole: string; instructions: string | null; revision: number; createdAt: string; decidedAt: string | null;
   workflow: string; workflowVersion: number; instanceId: string; requester: string | null;
   request: Record<string, unknown> | null; submission: Record<string, unknown> | null; canDecide: boolean; history: ApprovalTaskEvent[];
+  // Set for the requester while changes are requested: the form fields (with request keys) they can edit and resubmit.
+  canResubmit: boolean; fields: FormField[] | null;
 };
 export type ApprovalTaskDecision = "approve" | "reject" | "request_changes";
 export type WorkflowRunApproval = {
   id: string; nodeId: string; status: ApprovalTaskStatus; assigneeRole: string; createdAt: string; decidedAt: string | null; history: ApprovalTaskEvent[];
+};
+
+export type MyRequestSummary = {
+  id: string; workflow: string; versionNumber: number; status: string; outcome: string | null; headline: string; currentStep: string | null;
+  openTaskId: string | null; startedAt: string; completedAt: string | null;
+};
+export type MyRequestPage = { items: MyRequestSummary[]; total: number; page: number; pageSize: number };
+export type MyRequestDetail = MyRequestSummary & {
+  request: Record<string, unknown> | null;
+  approvals: { id: string; status: ApprovalTaskStatus; assigneeRole: string; createdAt: string; decidedAt: string | null; history: ApprovalTaskEvent[] }[];
 };

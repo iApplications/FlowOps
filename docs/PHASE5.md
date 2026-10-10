@@ -66,9 +66,9 @@ ApprovalTaskEvent         append-only history for a task
 - **Create:** reaching an Approval node writes the task and its Created event in the same save as the Waiting instance.
 - **List:** `GET /api/tasks` returns the caller's pending tasks (organization-scoped, role-filtered); `GET /api/tasks/{id}` returns detail, the request values and history.
 - **Decide:** `POST /api/tasks/{id}/decision` with `{ decision, comment, revision }`. Approve and Reject resume the instance; Request changes requires a comment. A stale revision returns 409.
-- **Resubmit:** `POST /api/tasks/{id}/resubmit` by the requester only, with revised `request.*` values validated against the pinned form version; the task reopens.
+- **Resubmit:** `POST /api/tasks/{id}/resubmit` (and `/api/portal/tasks/{id}/resubmit`) by the requester only, with `{ values, comment, revision }` where `values` is keyed by form field key. Values are validated against the form version of the original submission; files carry over unchanged and cannot be replaced. Only runs started from a form submission can be resubmitted. The run request values are replaced, the task reopens as Pending and the instance stays Waiting.
 - **Comments:** `POST /api/tasks/{id}/comments` for assignees and the requester.
-- **Requester status:** `GET /api/my-requests` and detail show instance status, current step and approval history for the requester's own runs.
+- **Requester status:** `GET /api/portal/my-requests` and `/{instanceId}` (Portal only) show instance status, a plain-language headline, current step, request values and approval history for the requester's own runs; a link opens the open task for resubmitting.
 - **Authorization:** server-side tenant isolation on every endpoint; requester self-approval refused (403); Portal sessions only reach task endpoints for their active organization.
 - **Audit:** `approval.task_created`, `approval.approved`, `approval.rejected`, `approval.changes_requested`, `approval.resubmitted`, `approval.commented`.
 
