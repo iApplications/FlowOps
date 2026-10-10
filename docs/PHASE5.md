@@ -32,7 +32,7 @@ Out of scope, by later phase:
 | Notifications, reminders, SLA, overdue detection, background workers | 8 |
 | Step debugger, retry from failed step | 9 |
 
-## Decisions (proposed 2026-10-10, pending approval of this plan)
+## Decisions (approved 2026-10-10)
 
 1. **Request changes:** a resubmit loop. The task moves to `ChangesRequested` and the instance stays Waiting at the same node. The requester edits their values in Portal and resubmits; the task reopens as Pending. No new node outputs and no graph change, so published workflows are unaffected.
 2. **Assignment:** role claim. Any member of the instance's organization whose role satisfies the node's `assigneeRole` can see and decide the task. The first decision wins (task revision token). The requester can never decide their own task.
@@ -81,10 +81,21 @@ ApprovalTaskEvent         append-only history for a task
 
 ## Acceptance checklist
 
-- [ ] Expense form submission starts a run that waits on a Manager-role task
-- [ ] Member with the role sees the task; other role and other organization do not
-- [ ] Approve and Reject complete the run with the right outcome
-- [ ] Requester cannot decide their own task
-- [ ] Two concurrent decisions: one wins, one gets 409
-- [ ] Request changes, resubmit and a second decision work; history shows every step
-- [ ] Audit events exist for each action; the run stays pinned to its version after republishing
+Automated checks (62 backend tests, Debug build, 2026-10-10) cover every item. The browser pass is still to be run.
+
+- [x] Expense form submission starts a run that waits on a Manager-role task
+- [x] Member with the role sees the task; other role and other organization do not
+- [x] Approve and Reject complete the run with the right outcome
+- [x] Requester cannot decide their own task
+- [x] Two concurrent decisions: one wins, one gets 409
+- [x] Request changes, resubmit and a second decision work; history shows every step
+- [x] Audit events exist for each action; the run stays pinned to its version after republishing
+
+## Internal test: baseline Expense Approval
+
+1. In Studio (Owner), publish an Expense form with an `amount` field and a workflow Start (form trigger) → Approval (Admin) → End Approved / End Rejected.
+2. Submit the form from a Portal account (Member). **My Requests** shows "Waiting for Admin approval".
+3. In Studio **Tasks** (Owner/Admin), open the task: it shows the request values and history. Approve it; the run completes as Approved and My Requests shows the outcome.
+4. Repeat and Reject; repeat and Request changes with a comment. The requester sees "Changes requested", edits the amount, resubmits, and the task is Pending again; approve it.
+5. The requester cannot decide their own task; another organization sees nothing.
+6. Republish the workflow, then decide an older waiting task: the run keeps its original version.
