@@ -40,6 +40,15 @@ Out of scope: notifications, reminders, SLA (Phase 8); version history UI (Phase
 8. **Expense Approval:** published as new versions. Amount below 500 goes to Manager; 500 to 5000 goes Manager then Finance; above 5000 goes Manager, Finance, then Director, using the roles from decision 9.
 9. **Roles:** Owner is the master role and the only one who manages roles. Each user has exactly one role per organization. Owner, Admin and Member are built-in and cannot be deleted; the Owner can add custom roles (for example Manager, Finance, Director), assign them to accounts, rename or deactivate them. Approval nodes choose from the organization's role list and tasks snapshot the role. A role used by a published workflow cannot be hard-deleted. Role changes are audited, and the requester can still never decide their own task.
 
+## Slice 2: variables and Calculation
+
+- **Declaration:** the draft graph carries `variables: [{ name, type, initialValue }]` (max 20; names `[A-Za-z_][A-Za-z0-9_]{0,31}`, unique; types Number, Text, Boolean). A bad declaration rejects the save. Existing graphs have none.
+- **Run context:** a run starts with `vars` holding each variable's starting value (Number 0, Text empty, Boolean false unless set). Conditions and Calculations read them as `vars.<name>`.
+- **Calculation node:** one `next` output and up to 10 ordered assignments `{ variable, expression }`. Grammar: `+ - * /`, brackets, numbers, text, true/false and paths; a lone value is copied (data mapping). Arithmetic is exact decimal. Later assignments see earlier results.
+- **Run-time errors** fail the run with a structured code: `division_by_zero`, `type_mismatch` (including a result that does not match the variable's type), `variable_missing`, `variable_undeclared`, `calculation_overflow`, `expression_invalid`.
+- **Completeness issues** (block publishing, not saving): `variable_undeclared` (assigning to or reading an undeclared `vars.*`), `type_mismatch` (statically known result type differs from the variable's), `calculation_empty`, `expression_invalid`. Values only known at run time (`request.*`) are not type-checked until the run.
+- **Designer:** Variables panel above the canvas; Calculation node with an assignments editor.
+
 ## Data model
 
 Migration `OrganizationRoles` adds the role table and the membership role reference (slice 1). Migration `WorkflowLogic` adds `WorkflowInstance.ResumeAt`, indexed with status (slice 4). Variables, Calculation and Switch live in the versioned graph JSON, so they need no table changes.

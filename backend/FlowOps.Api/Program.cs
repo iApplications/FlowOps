@@ -28,6 +28,7 @@ builder.Services.AddScoped<IAuthorizationHandler, OrganizationPermissionHandler>
 builder.Services.AddSingleton<FlowOps.Api.Workflows.IWorkflowNodeHandler, FlowOps.Api.Workflows.StartNodeHandler>();
 builder.Services.AddSingleton<FlowOps.Api.Workflows.IWorkflowNodeHandler, FlowOps.Api.Workflows.ConditionNodeHandler>();
 builder.Services.AddSingleton<FlowOps.Api.Workflows.IWorkflowNodeHandler, FlowOps.Api.Workflows.ApprovalNodeHandler>();
+builder.Services.AddSingleton<FlowOps.Api.Workflows.IWorkflowNodeHandler, FlowOps.Api.Workflows.CalculationNodeHandler>();
 builder.Services.AddSingleton<FlowOps.Api.Workflows.IWorkflowNodeHandler, FlowOps.Api.Workflows.EndNodeHandler>();
 builder.Services.AddScoped<FlowOps.Api.Workflows.WorkflowEngine>();
 builder.Services.AddScoped<FlowOps.Api.Workflows.FormWorkflowTrigger>();

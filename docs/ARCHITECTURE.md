@@ -647,7 +647,7 @@ Run variables:
 | Manual | `request.*` (the JSON sent with the run), `trigger.type`, `trigger.startedAt` |
 | Form submitted | `request.<fieldKey>` for every field of the submitted form version, `submission.id`, `submission.formId`, `submission.formVersion`, `submission.submittedAt`, `trigger.type` |
 
-Form field keys (`amount`, `isUrgent`) are generated from labels and editable in the form designer. Phase 6 adds switch/calculation nodes and declared variable types.
+Form field keys (`amount`, `isUrgent`) are generated from labels and editable in the form designer. Phase 6 adds declared variable types and the Calculation node (delivered), and the Switch node.
 
 ### Workflow graph format (Phase 3)
 

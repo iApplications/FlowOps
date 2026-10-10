@@ -46,14 +46,16 @@ export type SubmissionSummary = { id: string; publicationId: string; versionNumb
 export type SubmissionHistoryPage = { items: SubmissionSummary[]; total: number; page: number; pageSize: number };
 export type SubmissionFile = { id: string; fieldId: string; fileName: string; size: number };
 export type SubmissionDetail = { submission: { id: string; submittedAt: string; values: SubmissionValues }; form: PublishedForm; files: SubmissionFile[] };
-export type WorkflowNodeType = "Start" | "Condition" | "Approval" | "End";
+export type WorkflowNodeType = "Start" | "Condition" | "Calculation" | "Approval" | "End";
 export type WorkflowNodeConfig = {
   trigger?: "Manual" | "FormSubmitted" | null; formId?: string | null; expression?: string | null;
   assigneeRole?: string | null; instructions?: string | null; outcome?: string | null;
+  assignments?: { variable: string | null; expression: string | null }[] | null;
 };
+export type WorkflowVariable = { name: string; type: "Number" | "Text" | "Boolean"; initialValue?: string | null };
 export type WorkflowNode = { id: string; type: WorkflowNodeType; label: string; position: { x: number; y: number }; config?: WorkflowNodeConfig | null };
 export type WorkflowConnection = { id: string; source: string; sourceHandle: string; target: string };
-export type WorkflowGraph = { schemaVersion: number; nodes: WorkflowNode[]; connections: WorkflowConnection[] };
+export type WorkflowGraph = { schemaVersion: number; nodes: WorkflowNode[]; connections: WorkflowConnection[]; variables?: WorkflowVariable[] | null };
 export type WorkflowSummary = {
   id: string; name: string; description: string; revision: number; createdAt: string; updatedAt: string;
   draftVersionNumber: number | null; publishedVersions: number; latestPublishedVersionNumber: number | null; issueCount: number | null;

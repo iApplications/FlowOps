@@ -4,7 +4,7 @@ namespace FlowOps.Api.Workflows;
 
 // Condition expressions. FlowOps never executes user code (PROJECT_RULES §14): expressions are parsed
 // against this small grammar and nothing else is accepted. Validate checks syntax for the designer; Evaluate
-// runs a valid expression against a run's context (Phase 4). Variable typing arrives in Phase 6.
+// runs a valid expression against a run's context (Phase 4). Calculations (Phase 6) are in WorkflowCalculation.cs.
 //
 //   expression := or
 //   or         := and ( "||" and )*
@@ -15,7 +15,7 @@ namespace FlowOps.Api.Workflows;
 //   path       := identifier ( "." identifier )*        identifier := [A-Za-z_][A-Za-z0-9_]*
 //
 // Function calls, indexing, assignment, statements and any other syntax are rejected.
-public static class WorkflowExpression
+public static partial class WorkflowExpression
 {
     public const int MaxTokens = 200;
     public const int MaxDepth = 32;
@@ -182,31 +182,8 @@ public static class WorkflowExpression
                     if (token.Text is "true" or "false") return new(ValueKind.Boolean, token.Text == "true");
                     var path = new List<string> { token.Text };
                     while (Accept(".")) { path.Add(Current.Text); index++; }
-                    return skip ? Skipped : Lookup(path);
+                    return skip ? Skipped : ReadPath(context, path);
             }
-        }
-
-        private Value Lookup(List<string> path)
-        {
-            System.Text.Json.Nodes.JsonNode? node = context;
-            foreach (var segment in path)
-            {
-                if (node is not System.Text.Json.Nodes.JsonObject current || !current.TryGetPropertyValue(segment, out node))
-                    throw new EvaluationException("variable_missing", $"The variable '{string.Join('.', path)}' has no value in this run.");
-            }
-            if (node is null) return new(ValueKind.Null);
-            var name = string.Join('.', path);
-            return node.GetValueKind() switch
-            {
-                System.Text.Json.JsonValueKind.True => new(ValueKind.Boolean, true),
-                System.Text.Json.JsonValueKind.False => new(ValueKind.Boolean, false),
-                System.Text.Json.JsonValueKind.String => new(ValueKind.String, Text: node.GetValue<string>()),
-                System.Text.Json.JsonValueKind.Number when decimal.TryParse(node.ToJsonString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var number)
-                    => new(ValueKind.Number, Number: number),
-                System.Text.Json.JsonValueKind.Object or System.Text.Json.JsonValueKind.Array
-                    => throw new EvaluationException("type_mismatch", $"The variable '{name}' is a group of values and cannot be compared."),
-                _ => throw new EvaluationException("type_mismatch", $"The variable '{name}' is not a number, text or true/false.")
-            };
         }
 
         private static string Unescape(string quoted)
@@ -216,6 +193,30 @@ public static class WorkflowExpression
                 builder.Append(quoted[i] == '\\' ? quoted[++i] : quoted[i]);
             return builder.ToString();
         }
+    }
+
+    // Reads one value from the run context by dotted path; a missing path is an error, never a silent default.
+    private static Value ReadPath(System.Text.Json.Nodes.JsonObject context, List<string> path)
+    {
+        System.Text.Json.Nodes.JsonNode? node = context;
+        foreach (var segment in path)
+        {
+            if (node is not System.Text.Json.Nodes.JsonObject current || !current.TryGetPropertyValue(segment, out node))
+                throw new EvaluationException("variable_missing", $"The variable '{string.Join('.', path)}' has no value in this run.");
+        }
+        if (node is null) return new(ValueKind.Null);
+        var name = string.Join('.', path);
+        return node.GetValueKind() switch
+        {
+            System.Text.Json.JsonValueKind.True => new(ValueKind.Boolean, true),
+            System.Text.Json.JsonValueKind.False => new(ValueKind.Boolean, false),
+            System.Text.Json.JsonValueKind.String => new(ValueKind.String, Text: node.GetValue<string>()),
+            System.Text.Json.JsonValueKind.Number when decimal.TryParse(node.ToJsonString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var number)
+                => new(ValueKind.Number, Number: number),
+            System.Text.Json.JsonValueKind.Object or System.Text.Json.JsonValueKind.Array
+                => throw new EvaluationException("type_mismatch", $"The variable '{name}' is a group of values and cannot be compared."),
+            _ => throw new EvaluationException("type_mismatch", $"The variable '{name}' is not a number, text or true/false.")
+        };
     }
 
     private static (List<Token> Tokens, string? Error) Tokenize(string text)
@@ -270,7 +271,7 @@ public static class WorkflowExpression
             }
             var two = i + 1 < text.Length ? text.Substring(i, 2) : null;
             if (two is "&&" or "||" or "==" or "!=" or "<=" or ">=") { tokens.Add(new(Kind.Symbol, two, start + 1)); i += 2; continue; }
-            if (c is '!' or '<' or '>' or '(' or ')' or '.' or '-') { tokens.Add(new(Kind.Symbol, c.ToString(), start + 1)); i++; continue; }
+            if (c is '!' or '<' or '>' or '(' or ')' or '.' or '-' or '+' or '*' or '/') { tokens.Add(new(Kind.Symbol, c.ToString(), start + 1)); i++; continue; }
             if (c == '=') return (tokens, $"Use == to compare values (position {start + 1}).");
             if (c is '&' or '|') return (tokens, $"Use {c}{c} to combine conditions (position {start + 1}).");
             return (tokens, $"Unsupported character '{c}' at position {start + 1}.");

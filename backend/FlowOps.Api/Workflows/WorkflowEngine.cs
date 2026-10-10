@@ -18,7 +18,7 @@ public sealed record NodeResult(NodeResultKind Kind, JsonObject? Output = null, 
 }
 
 // ResumeOutput is set only when a waiting node is resumed with the output chosen for it (for example "approved").
-public sealed record NodeExecutionContext(WorkflowNode Node, JsonObject Variables, string? ResumeOutput);
+public sealed record NodeExecutionContext(WorkflowNode Node, JsonObject Variables, string? ResumeOutput, IReadOnlyDictionary<string, string>? VariableTypes = null);
 
 // One handler per node type (ARCHITECTURE §8). Handlers are pure decisions over the node and the run's
 // variables; the engine owns persistence, routing and failure recording.
@@ -56,6 +56,31 @@ public sealed class ApprovalNodeHandler : IWorkflowNodeHandler
     public NodeResult Execute(NodeExecutionContext context) => context.ResumeOutput is { } decision
         ? NodeResult.Next(decision, new JsonObject { ["decision"] = decision })
         : new(NodeResultKind.Wait, new JsonObject { ["assigneeRole"] = context.Node.Config?.AssigneeRole });
+}
+
+// Assigns declared workflow variables in order; later assignments see earlier results (PHASE6).
+public sealed class CalculationNodeHandler : IWorkflowNodeHandler
+{
+    public string NodeType => WorkflowNodeTypes.Calculation;
+    public NodeResult Execute(NodeExecutionContext context)
+    {
+        var assignments = context.Node.Config?.Assignments ?? [];
+        if (assignments.Count == 0) return NodeResult.Fail("calculation_empty", "The Calculation has no assignments.");
+        if (context.Variables["vars"] is not JsonObject vars) context.Variables["vars"] = vars = [];
+        var assigned = new JsonObject();
+        foreach (var assignment in assignments)
+        {
+            var name = assignment.Variable ?? "";
+            if (context.VariableTypes is null || !context.VariableTypes.TryGetValue(name, out var type))
+                return NodeResult.Fail("variable_undeclared", $"The variable '{name}' is not declared.");
+            var result = WorkflowExpression.Calculate(assignment.Expression, context.Variables);
+            if (result.ErrorCode is not null) return NodeResult.Fail(result.ErrorCode, $"{name}: {result.ErrorMessage}");
+            if (result.Type != type) return NodeResult.Fail("type_mismatch", $"{name} is {type}, but the calculation gives {result.Type}.");
+            vars[name] = result.Value!.DeepClone();
+            assigned[name] = result.Value.DeepClone();
+        }
+        return NodeResult.Next("next", new JsonObject { ["assigned"] = assigned });
+    }
 }
 
 public sealed class EndNodeHandler : IWorkflowNodeHandler
@@ -103,6 +128,8 @@ public sealed class WorkflowEngine(FlowOpsDbContext db, IEnumerable<IWorkflowNod
             ["trigger"] = new JsonObject { ["type"] = run.Trigger, ["startedAt"] = instance.StartedAt.ToString("O") }
         };
         if (run.Submission is not null) variables["submission"] = run.Submission.DeepClone();
+        if (run.Version.Graph.Variables is { Count: > 0 } declared)
+            variables["vars"] = new JsonObject(declared.Select(x => KeyValuePair.Create<string, JsonNode?>(x.Name, x.InitialNode())));
         db.WorkflowInstances.Add(instance);
         AuditService.Append(db, "workflow.instance_started", run.UserId, instance.Id.ToString(), instance.OrganizationId);
         var graph = run.Version.Graph;
@@ -149,6 +176,7 @@ public sealed class WorkflowEngine(FlowOpsDbContext db, IEnumerable<IWorkflowNod
     private void Run(WorkflowInstance instance, WorkflowExecution execution, WorkflowGraph graph, WorkflowNode node, JsonObject variables, string? resumeOutput)
     {
         var nodes = graph.Nodes.ToDictionary(x => x.Id);
+        var variableTypes = (graph.Variables ?? []).ToDictionary(x => x.Name, x => x.Type);
         var connections = graph.Connections.ToDictionary(x => (x.Source, x.SourceHandle), x => x.Target);
         for (var sequence = 1; ; sequence++)
         {
@@ -166,7 +194,7 @@ public sealed class WorkflowEngine(FlowOpsDbContext db, IEnumerable<IWorkflowNod
             try
             {
                 result = _handlers.TryGetValue(node.Type, out var handler)
-                    ? handler.Execute(new(node, variables, resumeOutput))
+                    ? handler.Execute(new(node, variables, resumeOutput, variableTypes))
                     : NodeResult.Fail("node_unsupported", $"{node.Type} nodes cannot run yet.");
             }
             catch (Exception exception)

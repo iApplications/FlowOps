@@ -1650,6 +1650,97 @@ public sealed class SecurityTests : IAsyncLifetime
         return (await scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>().Users.SingleAsync(x => x.Email == email && (surface == null || x.AccountSurface == surface))).Id;
     }
 
+    [Theory]
+    [InlineData("1 + 2 * 3", "Number", "7")]
+    [InlineData("(1 + 2) * 3", "Number", "9")]
+    [InlineData("10 / 4", "Number", "2.5")]
+    [InlineData("-request.amount + 5", "Number", "-95")]
+    [InlineData("request.amount * 1.1", "Number", "110.0")]
+    [InlineData("request.category", "Text", "Travel")]
+    [InlineData("\"Urgent\"", "Text", "Urgent")]
+    [InlineData("true", "Boolean", "true")]
+    public void Calculations_evaluate_arithmetic_and_copy_single_values(string expression, string type, string expected)
+    {
+        var context = System.Text.Json.Nodes.JsonNode.Parse("""{"request":{"amount":100,"category":"Travel"}}""")!.AsObject();
+        var result = FlowOps.Api.Workflows.WorkflowExpression.Calculate(expression, context);
+        Assert.Null(result.ErrorCode);
+        Assert.Equal(type, result.Type);
+        Assert.Equal(expected, type == "Text" ? result.Value!.GetValue<string>() : result.Value!.ToJsonString());
+    }
+
+    [Theory]
+    [InlineData("1 / 0", "division_by_zero")]
+    [InlineData("request.category + 1", "type_mismatch")]
+    [InlineData("\"a\" * 2", "type_mismatch")]
+    [InlineData("-request.category", "type_mismatch")]
+    [InlineData("request.missing + 1", "variable_missing")]
+    [InlineData("total(1)", "expression_invalid")]
+    [InlineData("1 +", "expression_invalid")]
+    [InlineData("(1 + 2", "expression_invalid")]
+    [InlineData("1 == 2", "expression_invalid")]
+    [InlineData("items[0]", "expression_invalid")]
+    public void Calculations_reject_bad_input_with_structured_errors(string expression, string code)
+    {
+        var context = System.Text.Json.Nodes.JsonNode.Parse("""{"request":{"amount":100,"category":"Travel"}}""")!.AsObject();
+        Assert.Equal(code, FlowOps.Api.Workflows.WorkflowExpression.Calculate(expression, context).ErrorCode);
+    }
+
+    [Fact]
+    public async Task Declared_variables_and_calculations_run_validate_and_fail_with_structured_errors()
+    {
+        using var studio = NewClient();
+        await RegisterAndLogin(studio, "calc-owner@example.test");
+        var organization = await CreateOrganization(studio, "Calculation Workspace");
+        var setup = await studio.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+        await Mutate(studio, HttpMethod.Post, "/api/auth/mfa/enable", new { code = AuthenticatorCode(setup.GetProperty("sharedKey").GetString()!) });
+        var workflowId = (await (await Mutate(studio, HttpMethod.Post, "/api/workflows", new { name = "Totals" })).Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var path = $"/api/workflows/{workflowId}";
+        object Graph(object[] assignments, object[]? variables = null) => new
+        {
+            schemaVersion = 1,
+            variables = variables ?? [new { name = "total", type = "Number" }, new { name = "band", type = "Text", initialValue = "none" }],
+            nodes = new object[]
+            {
+                Node("start", "Start", "Start", new { trigger = "Manual" }), Node("calc", "Calculation", "Work out total", new { assignments }, 250),
+                Node("check", "Condition", "Large?", new { expression = "vars.total > 100" }, 500),
+                Node("high", "End", "High", new { outcome = "High" }, 750), Node("low", "End", "Low", new { outcome = "Low" }, 750, 120)
+            },
+            connections = new[] { Link("c1", "start", "next", "calc"), Link("c2", "calc", "next", "check"), Link("c3", "check", "true", "high"), Link("c4", "check", "false", "low") }
+        };
+        object[] Good = [new { variable = "total", expression = "request.amount * 1.1" }, new { variable = "band", expression = "\"large\"" }];
+
+        // Structural rules reject a save; undeclared names and type mismatches are completeness issues that block publishing.
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Put, $"{path}/draft", new { graph = Graph(Good, [new { name = "total", type = "Number" }, new { name = "total", type = "Text" }]), draftRevision = 0 })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Put, $"{path}/draft", new { graph = Graph(Good, [new { name = "1bad", type = "Number" }]), draftRevision = 0 })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Put, $"{path}/draft", new { graph = Graph(Good, [new { name = "total", type = "Number", initialValue = "abc" }]), draftRevision = 0 })).StatusCode);
+        var invalid = await Mutate(studio, HttpMethod.Put, $"{path}/draft", new
+        {
+            graph = Graph([new { variable = "nope", expression = "1" }, new { variable = "band", expression = "5" }, new { variable = "total", expression = "vars.ghost + 1" }]),
+            draftRevision = 0
+        });
+        Assert.Equal(HttpStatusCode.OK, invalid.StatusCode);
+        var issues = (await invalid.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("draft").GetProperty("issues").EnumerateArray().Select(x => x.GetProperty("code").GetString()).ToList();
+        Assert.Contains("variable_undeclared", issues);
+        Assert.Contains("type_mismatch", issues);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Post, $"{path}/publish", new { draftRevision = 1 })).StatusCode);
+
+        // A valid graph publishes; the run assigns variables, routes on them and records the values in its context.
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"{path}/draft", new { graph = Graph(Good), draftRevision = 1 })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Post, $"{path}/publish", new { draftRevision = 2 })).StatusCode);
+        var high = (await (await StartRun(studio, workflowId, new { amount = 200 })).Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var low = (await (await StartRun(studio, workflowId, new { amount = 50 })).Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var broken = (await (await StartRun(studio, workflowId, new { amount = "abc" })).Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        var instances = await db.WorkflowInstances.Where(x => new[] { high, low, broken }.Contains(x.Id)).ToDictionaryAsync(x => x.Id);
+        Assert.Equal(("Completed", "High"), (instances[high].Status, instances[high].Outcome));
+        Assert.Equal(("Completed", "Low"), (instances[low].Status, instances[low].Outcome));
+        var vars = System.Text.Json.Nodes.JsonNode.Parse(instances[high].ContextJson)!["vars"]!;
+        Assert.Equal(220.0m, vars["total"]!.GetValue<decimal>());
+        Assert.Equal("large", vars["band"]!.GetValue<string>());
+        Assert.Equal(("Failed", "type_mismatch"), (instances[broken].Status, instances[broken].ErrorCode));
+    }
+
     [Fact]
     public async Task Requesters_track_their_runs_and_resubmit_after_changes_are_requested()
     {
