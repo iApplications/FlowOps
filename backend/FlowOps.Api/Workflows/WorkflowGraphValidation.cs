@@ -27,7 +27,8 @@ public static partial class WorkflowGraphValidation
     private static partial Regex IdPattern();
 
     // formExists answers whether a form ID belongs to the active organization.
-    public static string? Validate(WorkflowGraph? graph, Func<Guid, bool> formExists)
+    // roleExists answers whether a name is an active custom role of the organization; built-in roles are always accepted.
+    public static string? Validate(WorkflowGraph? graph, Func<Guid, bool> formExists, Func<string, bool>? roleExists = null)
     {
         if (graph?.Nodes is null || graph.Connections is null) return "Provide workflow nodes and connections.";
         if (graph.SchemaVersion != WorkflowGraph.CurrentSchemaVersion) return "Unsupported workflow graph version. Reload the designer.";
@@ -41,7 +42,7 @@ public static partial class WorkflowGraphValidation
             if (string.IsNullOrWhiteSpace(node.Label) || node.Label.Trim().Length > MaxLabelLength) return $"Node labels must be 1–{MaxLabelLength} characters.";
             if (node.Position is null || !double.IsFinite(node.Position.X) || !double.IsFinite(node.Position.Y)
                 || Math.Abs(node.Position.X) > MaxCoordinate || Math.Abs(node.Position.Y) > MaxCoordinate) return $"{node.Label}: invalid position.";
-            if (ValidateConfig(node, node.Config ?? new(), formExists) is string error) return $"{node.Label}: {error}";
+            if (ValidateConfig(node, node.Config ?? new(), formExists, roleExists) is string error) return $"{node.Label}: {error}";
         }
         var connectionIds = new HashSet<string>();
         var usedOutputs = new HashSet<(string, string)>();
@@ -58,7 +59,7 @@ public static partial class WorkflowGraphValidation
         return null;
     }
 
-    private static string? ValidateConfig(WorkflowNode node, WorkflowNodeConfig config, Func<Guid, bool> formExists)
+    private static string? ValidateConfig(WorkflowNode node, WorkflowNodeConfig config, Func<Guid, bool> formExists, Func<string, bool>? roleExists)
     {
         // Each type may only carry its own settings, so stale values cannot hide in a node after its type changes.
         bool Only(params string[] allowed) =>
@@ -77,7 +78,8 @@ public static partial class WorkflowGraphValidation
                 return (config.Expression?.Length ?? 0) > MaxExpressionLength ? $"Expressions must be {MaxExpressionLength} characters or fewer." : null;
             case WorkflowNodeTypes.Approval:
                 if (!Only("assigneeRole", "instructions")) return "Approval nodes only configure an assignee role and instructions.";
-                if (config.AssigneeRole is null || !AssigneeRoles.Contains(config.AssigneeRole)) return "Choose who approves: Owner, Admin or Member.";
+                if (config.AssigneeRole is null || !(AssigneeRoles.Contains(config.AssigneeRole) || roleExists?.Invoke(config.AssigneeRole) == true))
+                    return "Choose who approves from the organization roles.";
                 return (config.Instructions?.Length ?? 0) > MaxInstructionsLength ? $"Instructions must be {MaxInstructionsLength} characters or fewer." : null;
             default:
                 if (!Only("outcome")) return "End nodes only configure an outcome.";

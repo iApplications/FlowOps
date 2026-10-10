@@ -229,6 +229,7 @@ app.Use(async (context, next) =>
 
 app.MapAuthEndpoints();
 app.MapOrganizationEndpoints();
+app.MapRoleEndpoints();
 FlowOps.Api.Forms.FormEndpoints.MapFormEndpoints(app);
 FlowOps.Api.Workflows.WorkflowEndpoints.MapWorkflowEndpoints(app);
 FlowOps.Api.Workflows.WorkflowRunEndpoints.MapWorkflowRunEndpoints(app);

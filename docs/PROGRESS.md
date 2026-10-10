@@ -46,8 +46,9 @@ Updated: 2026-10-10
 | Phase 5 approval tasks (slice 1) | Complete: `ApprovalInbox` migration, task creation at Approval nodes, role-based decisions that resume the pinned run, comments, audit events | Automated checks passed 2026-10-10; merged into Phase 5 (#25) |
 | Phase 5 task inbox (slice 2) | Complete: Portal My Tasks, Studio Tasks, task detail with decision form and comments | Merged into Phase 5 (#27) |
 | Phase 5 requester status (slice 3) | Complete: My Requests, plain-language status, request changes and resubmit loop | Merged into Phase 5 (#28) |
-| Phase 5 final acceptance and merge to main | Docs and checklist on `feat/phase5-acceptance` | Automated checks passed 2026-10-10; browser pass and merge pending |
-| Phase 6 and later roadmap phases | Pending | Not started |
+| Phase 5 final acceptance and merge to main | Complete | Merged into main (#31) |
+| Phase 6 roles (slice 1) | Implemented: Owner-managed custom roles with Member/Admin base access, one role per user, role picker on Approval nodes, role-matched tasks, audit events | Automated and browser checks passed 2026-10-10; branch `feat/phase6-roles`, plan in [PHASE6](PHASE6.md) |
+| Phase 6 logic slices and later roadmap phases | Pending | Not started |
 
 ## Phase 2 roadmap deliverables
 

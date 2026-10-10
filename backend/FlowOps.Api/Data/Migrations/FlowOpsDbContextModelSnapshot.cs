@@ -208,11 +208,54 @@ namespace FlowOps.Api.Data.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
 
+                    b.Property<Guid?>("RoleId")
+                        .HasColumnType("uuid");
+
                     b.HasKey("OrganizationId", "UserId");
+
+                    b.HasIndex("RoleId");
 
                     b.HasIndex("UserId");
 
                     b.ToTable("OrganizationMembers");
+                });
+
+            modelBuilder.Entity("FlowOps.Api.Data.OrganizationRole", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("BaseRole")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("NormalizedName")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrganizationId", "NormalizedName")
+                        .IsUnique();
+
+                    b.ToTable("CustomRoles");
                 });
 
             modelBuilder.Entity("FlowOps.Api.Forms.FormAttachment", b =>
@@ -389,8 +432,8 @@ namespace FlowOps.Api.Data.Migrations
 
                     b.Property<string>("AssigneeRole")
                         .IsRequired()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)");
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
 
                     b.Property<string>("CorrelationId")
                         .IsRequired()
@@ -951,6 +994,11 @@ namespace FlowOps.Api.Data.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("FlowOps.Api.Data.OrganizationRole", null)
+                        .WithMany()
+                        .HasForeignKey("RoleId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("FlowOps.Api.Data.FlowUser", "User")
                         .WithMany()
                         .HasForeignKey("UserId")
@@ -960,6 +1008,15 @@ namespace FlowOps.Api.Data.Migrations
                     b.Navigation("Organization");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("FlowOps.Api.Data.OrganizationRole", b =>
+                {
+                    b.HasOne("FlowOps.Api.Data.Organization", null)
+                        .WithMany()
+                        .HasForeignKey("OrganizationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("FlowOps.Api.Forms.FormAttachment", b =>

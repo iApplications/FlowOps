@@ -32,22 +32,35 @@ public static class ApprovalEndpoints
         tasks.MapPost("/{taskId:guid}/comments", Comment).WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(16 * 1024));
     }
 
-    // Owner satisfies every role, Admin satisfies Admin and Member, Member only Member.
-    public static bool Satisfies(string memberRole, string assigneeRole) => Rank(memberRole) >= Rank(assigneeRole);
+    // Built-in assignee roles: Owner satisfies every role, Admin satisfies Admin and Member, Member only Member, by base access role.
+    // A custom assignee role (PHASE6) is satisfied by the Owner or by a member holding exactly that role.
+    public static bool Satisfies(string memberRole, string assigneeRole, string? memberRoleName = null) =>
+        OrganizationRoles.IsBuiltIn(assigneeRole)
+            ? Rank(memberRole) >= Rank(assigneeRole)
+            : memberRole == OrganizationRoles.Owner || string.Equals(memberRoleName, assigneeRole, StringComparison.Ordinal);
     private static int Rank(string role) => role switch { OrganizationRoles.Owner => 3, OrganizationRoles.Admin => 2, OrganizationRoles.Member => 1, _ => 99 };
 
-    private static async Task<string?> MemberRole(FlowOpsDbContext db, Guid? organizationId, string userId) =>
-        await db.OrganizationMembers.AsNoTracking().Where(x => x.OrganizationId == organizationId && x.UserId == userId).Select(x => x.Role).FirstOrDefaultAsync();
+    private sealed record MemberAccess(string Role, string? RoleName);
+
+    private static async Task<MemberAccess?> MemberRole(FlowOpsDbContext db, Guid? organizationId, string userId) =>
+        await (from member in db.OrganizationMembers.AsNoTracking()
+               join role in db.CustomRoles.AsNoTracking() on member.RoleId equals role.Id into roles
+               from role in roles.DefaultIfEmpty()
+               where member.OrganizationId == organizationId && member.UserId == userId
+               select new MemberAccess(member.Role, role == null || !role.IsActive ? null : role.Name)).FirstOrDefaultAsync();
 
     private static async Task<IResult> List(string? status, int? page, HttpContext context, FlowOpsDbContext db)
     {
         var session = AuthEndpoints.CurrentSession(context)!;
-        var role = await MemberRole(db, session.ActiveOrganizationId, session.UserId);
-        if (role is null) return Results.Forbid();
+        var access = await MemberRole(db, session.ActiveOrganizationId, session.UserId);
+        if (access is null) return Results.Forbid();
+        var role = access.Role;
         var pageNumber = page ?? 1;
         if (pageNumber is < 1 or > 100000) return Results.BadRequest(new { error = "Invalid page." });
         var allowed = new[] { OrganizationRoles.Owner, OrganizationRoles.Admin, OrganizationRoles.Member }.Where(x => Satisfies(role, x)).ToList();
-        var query = db.ApprovalTasks.AsNoTracking().Where(x => x.OrganizationId == session.ActiveOrganizationId && allowed.Contains(x.AssigneeRole)
+        if (access.RoleName is { } roleName) allowed.Add(roleName);
+        var isOwner = role == OrganizationRoles.Owner;
+        var query = db.ApprovalTasks.AsNoTracking().Where(x => x.OrganizationId == session.ActiveOrganizationId && (isOwner || allowed.Contains(x.AssigneeRole))
             && x.RequesterUserId != session.UserId);
         query = status == "decided"
             ? query.Where(x => x.Status != ApprovalTaskStatus.Pending && x.Status != ApprovalTaskStatus.ChangesRequested)
@@ -72,13 +85,13 @@ public static class ApprovalEndpoints
     private static async Task<(ApprovalTask? Task, bool CanDecide)> Visible(Guid taskId, HttpContext context, FlowOpsDbContext db, bool tracked = false)
     {
         var session = AuthEndpoints.CurrentSession(context)!;
-        var role = await MemberRole(db, session.ActiveOrganizationId, session.UserId);
-        if (role is null) return (null, false);
+        var access = await MemberRole(db, session.ActiveOrganizationId, session.UserId);
+        if (access is null) return (null, false);
         var query = tracked ? db.ApprovalTasks.AsQueryable() : db.ApprovalTasks.AsNoTracking();
         var task = await query.SingleOrDefaultAsync(x => x.Id == taskId && x.OrganizationId == session.ActiveOrganizationId);
         if (task is null) return (null, false);
         var isRequester = task.RequesterUserId == session.UserId;
-        var assignee = Satisfies(role, task.AssigneeRole);
+        var assignee = Satisfies(access.Role, task.AssigneeRole, access.RoleName);
         return !isRequester && !assignee ? (null, false) : (task, assignee && !isRequester);
     }
 

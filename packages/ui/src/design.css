@@ -343,3 +343,27 @@ a { color: inherit; text-decoration: none; }
 .account-menu-item .org-monogram { flex: none; width: 28px; height: 28px; font-size: 12px; }
 .account-menu-check { margin-left: auto; color: var(--accent-strong); font-weight: 800; }
 .account-menu-signout { color: #a33a2f; font-weight: 700; }
+
+/* People and roles directories (PHASE6): searchable, paged tables that stay usable with many rows. */
+.dir-card { margin-bottom: 20px; }
+.dir-toolbar { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; margin-bottom: 14px; }
+.dir-toolbar .input { flex: 1 1 220px; }
+.dir-toolbar .select { width: auto; flex: 0 0 auto; }
+.dir-add { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; padding: 16px; margin-bottom: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--soft); }
+.dir-add .field { flex: 1 1 200px; margin: 0; }
+.dir-table { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.dir-row { display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(0, 1.3fr) minmax(0, .8fr) minmax(0, .9fr) minmax(0, .8fr); gap: 12px; align-items: center; padding: 11px 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.dir-row:last-child { border-bottom: 0; }
+.dir-row-roles { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, .9fr) minmax(0, 1.3fr); }
+.dir-head { padding-block: 9px; background: var(--soft); color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.dir-select { min-height: 36px; padding-block: 5px; font-size: 13px; }
+.dir-actions { display: flex; justify-content: flex-end; gap: 12px; }
+.dir-pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; color: var(--muted); font-size: 12px; }
+.dir-pager-buttons { display: flex; gap: 8px; }
+.dir-pager .btn { min-height: 34px; padding: 5px 12px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (max-width: 720px) {
+  .dir-head { display: none; }
+  .dir-row, .dir-row-roles { grid-template-columns: 1fr; gap: 6px; }
+  .dir-actions { justify-content: flex-start; }
+}

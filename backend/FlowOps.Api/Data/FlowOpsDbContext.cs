@@ -27,6 +27,9 @@ public static class OrganizationRoles
     public const string Admin = "Admin";
     public const string Member = "Member";
 
+    public const int MaxNameLength = 32;
+
+    public static bool IsBuiltIn(string role) => role is Owner or Admin or Member;
     public static bool IsValid(string role) => role is Owner or Admin or Member;
     public static bool IsPrivileged(string role) => role is Owner or Admin;
 }
@@ -37,8 +40,25 @@ public sealed class OrganizationMember
     public Organization Organization { get; set; } = null!;
     public required string UserId { get; set; }
     public FlowUser User { get; set; } = null!;
+    // The base access role (Owner, Admin or Member). Every access check uses this; RoleId only adds a business name.
     public required string Role { get; set; }
+    // The custom role the Owner assigned (PHASE6), or null for the built-in role. Its BaseRole always equals Role.
+    public Guid? RoleId { get; set; }
     public DateTimeOffset JoinedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+// A custom, organization-scoped role such as Manager or Finance. Names never change after creation because published
+// workflows and approval tasks refer to them; a role is retired by deactivating it.
+public sealed class OrganizationRole
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid OrganizationId { get; set; }
+    public required string Name { get; set; }
+    public required string NormalizedName { get; set; }
+    // Admin (Studio accounts) or Member (Portal accounts).
+    public required string BaseRole { get; set; }
+    public bool IsActive { get; set; } = true;
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
 public sealed class BrowserSession
@@ -67,6 +87,7 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
 {
     public DbSet<Organization> Organizations => Set<Organization>();
     public DbSet<OrganizationMember> OrganizationMembers => Set<OrganizationMember>();
+    public DbSet<OrganizationRole> CustomRoles => Set<OrganizationRole>();
     public DbSet<BrowserSession> BrowserSessions => Set<BrowserSession>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
     public DbSet<FlowOps.Api.Forms.FormDefinition> Forms => Set<FlowOps.Api.Forms.FormDefinition>();
@@ -243,7 +264,7 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
         builder.Entity<FlowOps.Api.Workflows.ApprovalTask>(entity =>
         {
             entity.Property(x => x.NodeId).HasMaxLength(64);
-            entity.Property(x => x.AssigneeRole).HasMaxLength(16);
+            entity.Property(x => x.AssigneeRole).HasMaxLength(OrganizationRoles.MaxNameLength);
             entity.Property(x => x.Instructions).HasMaxLength(1000);
             entity.Property(x => x.Status).HasMaxLength(24);
             entity.Property(x => x.CorrelationId).HasMaxLength(64);
@@ -279,6 +300,16 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
             entity.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId)
                 .OnDelete(DeleteBehavior.Restrict);
             entity.HasIndex(x => x.UserId);
+            entity.HasIndex(x => x.RoleId);
+            entity.HasOne<OrganizationRole>().WithMany().HasForeignKey(x => x.RoleId).OnDelete(DeleteBehavior.Restrict);
+        });
+        builder.Entity<OrganizationRole>(entity =>
+        {
+            entity.Property(x => x.Name).HasMaxLength(OrganizationRoles.MaxNameLength);
+            entity.Property(x => x.NormalizedName).HasMaxLength(OrganizationRoles.MaxNameLength);
+            entity.Property(x => x.BaseRole).HasMaxLength(16);
+            entity.HasIndex(x => new { x.OrganizationId, x.NormalizedName }).IsUnique();
+            entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Cascade);
         });
         builder.Entity<BrowserSession>(entity =>
         {

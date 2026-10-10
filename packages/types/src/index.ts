@@ -3,6 +3,15 @@ export type PlatformHealth = {
   service: string;
 };
 
+export type OrganizationRoleItem = {
+  id: string | null;
+  name: string;
+  baseRole: "Owner" | "Admin" | "Member";
+  isBuiltIn: boolean;
+  isActive: boolean;
+  memberCount: number | null;
+};
+
 export type OrganizationSummary = {
   organizationId: string;
   name: string;
@@ -40,7 +49,7 @@ export type SubmissionDetail = { submission: { id: string; submittedAt: string; 
 export type WorkflowNodeType = "Start" | "Condition" | "Approval" | "End";
 export type WorkflowNodeConfig = {
   trigger?: "Manual" | "FormSubmitted" | null; formId?: string | null; expression?: string | null;
-  assigneeRole?: "Owner" | "Admin" | "Member" | null; instructions?: string | null; outcome?: string | null;
+  assigneeRole?: string | null; instructions?: string | null; outcome?: string | null;
 };
 export type WorkflowNode = { id: string; type: WorkflowNodeType; label: string; position: { x: number; y: number }; config?: WorkflowNodeConfig | null };
 export type WorkflowConnection = { id: string; source: string; sourceHandle: string; target: string };

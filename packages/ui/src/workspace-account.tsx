@@ -6,18 +6,10 @@ import type { CurrentUser, OrganizationSummary } from "@flowops/types";
 import { PasswordInput } from "./password-input";
 import { QRCodeSVG } from "qrcode.react";
 
-type Member = { userId: string; email: string; displayName: string; role: string };
-
 export function WorkspaceAccount({ initialUser, surface, onboarding = false }: { initialUser: CurrentUser; surface: "Studio" | "Portal"; onboarding?: boolean }) {
   const [user, setUser] = useState(initialUser);
   const [organizations, setOrganizations] = useState<OrganizationSummary[]>([]);
-  const [members, setMembers] = useState<Member[]>([]);
   const [organizationName, setOrganizationName] = useState("");
-  const [memberEmail, setMemberEmail] = useState("");
-  const [memberRole, setMemberRole] = useState("Member");
-  const [memberMessage, setMemberMessage] = useState("");
-  const [memberError, setMemberError] = useState(false);
-  const [memberBusy, setMemberBusy] = useState(false);
   const [displayName, setDisplayName] = useState(initialUser.displayName);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -37,12 +29,6 @@ export function WorkspaceAccount({ initialUser, surface, onboarding = false }: {
     apiRequest<OrganizationSummary[]>("/api/organizations").then(setOrganizations)
       .catch(error => setMessage(error.message));
   }, []);
-  useEffect(() => {
-    if (surface !== "Studio" || !active || !canManage) return;
-    apiRequest<Member[]>(`/api/organizations/${active.organizationId}/members`).then(setMembers)
-      .catch(() => setMembers([]));
-  }, [active?.organizationId, canManage, surface]);
-
   async function refresh() {
     const [updatedUser, updatedOrganizations] = await Promise.all([
       apiRequest<CurrentUser>("/api/auth/me"),
@@ -65,31 +51,6 @@ export function WorkspaceAccount({ initialUser, surface, onboarding = false }: {
     event.preventDefault();
     if (!canCreateOrganization) return;
     await action(() => apiRequest("/api/organizations", { method: "POST", body: JSON.stringify({ name: organizationName }) }), "Organization created.", true);
-  }
-
-  async function addMember(event: FormEvent) {
-    event.preventDefault();
-    if (!active || memberBusy) return;
-    setMemberMessage("");
-    setMemberError(false);
-    const form = event.currentTarget as HTMLFormElement;
-    if (!form.checkValidity()) {
-      setMemberError(true);
-      setMemberMessage("Enter a valid email address.");
-      return;
-    }
-    setMemberBusy(true);
-    try {
-      await apiRequest(`/api/organizations/${active.organizationId}/members`, {
-        method: "POST", body: JSON.stringify({ email: memberEmail, role: memberRole }),
-      });
-      setMembers(await apiRequest<Member[]>(`/api/organizations/${active.organizationId}/members`));
-      setMemberEmail("");
-      setMemberMessage("Member added.");
-    } catch (error) {
-      setMemberError(true);
-      setMemberMessage(error instanceof Error ? error.message : "Unable to add this member.");
-    } finally { setMemberBusy(false); }
   }
 
   return (
@@ -120,26 +81,8 @@ export function WorkspaceAccount({ initialUser, surface, onboarding = false }: {
           </section>
 
           {surface === "Studio" && canManage && active && <section className="panel-card" id="members">
-            <div className="panel-header"><div><span className="panel-kicker">{active.name}</span><h2>People & roles</h2><p>Add confirmed Portal accounts as Members or Studio accounts as Admins in {active.name}. The workspace Owner cannot be removed.</p></div><span className="tag">{members.length} members</span></div>
-            <ul className="member-list">
-              {members.map(member => <li key={member.userId} className="member-row">
-                <span className="member-main"><span className="member-avatar" aria-hidden="true">{member.displayName.slice(0, 1).toUpperCase()}</span><span><strong>{member.displayName}</strong><small>{member.email}</small></span></span>
-                <span className="member-actions"><span className="tag">{member.role}</span>
-                  {member.role !== "Owner" && (active.role === "Owner" || member.role === "Member") && <>
-                    <button className="text-button text-button-danger" onClick={() => action(async () => {
-                      await apiRequest(`/api/organizations/${active.organizationId}/members/${member.userId}`, { method: "DELETE" });
-                      setMembers(await apiRequest<Member[]>(`/api/organizations/${active.organizationId}/members`));
-                    }, "Member removed.")}>Remove</button>
-                  </>}
-                </span>
-              </li>)}
-            </ul>
-            <form noValidate onSubmit={addMember} className="inline-form">
-              <input className="input" type="email" required maxLength={256} aria-label="Member email" aria-describedby={memberMessage ? "member-message" : undefined} aria-invalid={memberError || undefined} placeholder="Confirmed user email" value={memberEmail} onChange={e => { setMemberEmail(e.target.value); setMemberMessage(""); setMemberError(false); }} />
-              <select className="select" aria-label="Member role" value={memberRole} onChange={e => setMemberRole(e.target.value)}><option value="Member">Member (Portal)</option>{active.role === "Owner" && <option value="Admin">Admin (Studio)</option>}</select>
-              <button className="btn btn-primary" disabled={memberBusy}>{memberBusy ? "Adding…" : "Add member"}</button>
-            </form>
-            {memberMessage && <p id="member-message" role={memberError ? "alert" : "status"} className="notice" style={{ marginTop: 12 }}>{memberMessage}</p>}
+            <div className="panel-header"><div><span className="panel-kicker">{active.name}</span><h2>People & roles</h2><p>Manage who belongs to {active.name} and the roles that route approvals.</p></div></div>
+            <div className="inline-form"><a className="btn btn-primary" href="/people">Manage people</a><a className="btn" href="/roles">Manage roles</a></div>
           </section>}
 
           {surface === "Portal" && <section className="panel-card">
