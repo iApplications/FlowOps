@@ -70,5 +70,24 @@ export type WorkflowRunExecution = {
 };
 export type WorkflowRunDetail = Omit<WorkflowRunSummary, "versionNumber"> & {
   workflow: { id: string; name: string }; version: { id: string; versionNumber: number; publishedAt: string; graph: WorkflowGraph };
-  sourceSubmissionId: string | null; variables: Record<string, unknown>; executions: WorkflowRunExecution[];
+  sourceSubmissionId: string | null; variables: Record<string, unknown>; executions: WorkflowRunExecution[]; approvals: WorkflowRunApproval[];
+};
+
+export type ApprovalTaskStatus = "Pending" | "Approved" | "Rejected" | "ChangesRequested" | "Cancelled";
+export type ApprovalTaskSummary = {
+  id: string; status: ApprovalTaskStatus; assigneeRole: string; instructions: string | null; createdAt: string; decidedAt: string | null;
+  workflow: string; requester: string | null;
+};
+export type ApprovalTaskPage = { items: ApprovalTaskSummary[]; total: number; page: number; pageSize: number };
+export type ApprovalTaskEvent = {
+  id: string; kind: "Created" | "Approved" | "Rejected" | "ChangesRequested" | "Resubmitted" | "Commented"; actor: string | null; comment: string | null; createdAt: string;
+};
+export type ApprovalTaskDetail = {
+  id: string; status: ApprovalTaskStatus; assigneeRole: string; instructions: string | null; revision: number; createdAt: string; decidedAt: string | null;
+  workflow: string; workflowVersion: number; instanceId: string; requester: string | null;
+  request: Record<string, unknown> | null; submission: Record<string, unknown> | null; canDecide: boolean; history: ApprovalTaskEvent[];
+};
+export type ApprovalTaskDecision = "approve" | "reject" | "request_changes";
+export type WorkflowRunApproval = {
+  id: string; nodeId: string; status: ApprovalTaskStatus; assigneeRole: string; createdAt: string; decidedAt: string | null; history: ApprovalTaskEvent[];
 };
