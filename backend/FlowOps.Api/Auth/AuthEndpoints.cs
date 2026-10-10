@@ -16,6 +16,34 @@ public static class AuthEndpoints
 
     public static string NormalizeSurface(string? surface) => string.Equals(surface, "Studio", StringComparison.OrdinalIgnoreCase) ? "Studio" : "Portal";
 
+    // Creates the same person's account on the other site when an Owner assigns them a role there (PHASE6). The email was already
+    // verified on the source account, so the new account is confirmed but has no password until its owner uses the setup link.
+    public static async Task<FlowUser?> ProvisionAccount(UserManager<FlowUser> users, string email, string displayName, string surface)
+    {
+        var username = surface + "." + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(users.NormalizeEmail(email))));
+        var user = new FlowUser { UserName = username, Email = email, DisplayName = displayName, AccountSurface = surface, EmailConfirmed = true };
+        return (await users.CreateAsync(user)).Succeeded ? user : null;
+    }
+
+    // Best effort: a failed email is logged and the person can still use Forgot password on that site.
+    public static async Task<bool> SendPasswordSetupEmail(UserManager<FlowUser> users, IConfiguration config, IEmailDelivery emailDelivery,
+        ILoggerFactory loggerFactory, FlowUser user, string organizationName)
+    {
+        try
+        {
+            var token = await users.GeneratePasswordResetTokenAsync(user);
+            var link = $"{GetSurfaceUrl(config, user.AccountSurface)}/reset-password?email={Uri.EscapeDataString(user.Email!)}&token={Uri.EscapeDataString(token)}";
+            await emailDelivery.SendAsync(user.Email!, $"Set up your FlowOps {user.AccountSurface} account",
+                $"You were given access to {organizationName} on FlowOps {user.AccountSurface}.\nOpen this link to set your password:\n{link}\n\nIf you did not expect this, ignore this email.");
+            return true;
+        }
+        catch (SmtpException)
+        {
+            loggerFactory.CreateLogger("FlowOps.Mail").LogWarning("Password setup email delivery failed");
+            return false;
+        }
+    }
+
     public static Task<FlowUser?> FindAccount(UserManager<FlowUser> users, string email, string? surface)
     {
         var normalizedEmail = users.NormalizeEmail(email.Trim());

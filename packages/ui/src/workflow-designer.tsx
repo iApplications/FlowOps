@@ -6,7 +6,7 @@ import {
   ReactFlow, ReactFlowProvider, Background, Controls, MiniMap, Handle, Position, useReactFlow,
   applyNodeChanges, applyEdgeChanges, type Node, type Edge, type NodeProps, type NodeChange, type EdgeChange, type Connection,
 } from "@xyflow/react";
-import type { WorkflowDetail, WorkflowGraph, WorkflowIssue, WorkflowNodeConfig, WorkflowNodeType } from "@flowops/types";
+import type { OrganizationRoleItem, WorkflowDetail, WorkflowGraph, WorkflowIssue, WorkflowNodeConfig, WorkflowNodeType } from "@flowops/types";
 import { apiRequest } from "@flowops/api-client";
 
 // summary and issueCount are display-only values derived at render time; they are never saved.
@@ -26,7 +26,7 @@ const defaults: Record<WorkflowNodeType, { label: string; config: WorkflowNodeCo
   Approval: { label: "Approval", config: { assigneeRole: "Admin", instructions: "" } },
   End: { label: "End", config: { outcome: "Completed" } },
 };
-const roleLabels = { Owner: "Owner", Admin: "Admin", Member: "Member" } as const;
+const builtInRoles = ["Owner", "Admin", "Member"];
 const dragType = "application/flowops-workflow-node";
 const newId = (prefix: string) => `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
 
@@ -35,7 +35,7 @@ function summary(data: NodeData, forms: FormOption[]) {
   switch (data.nodeType) {
     case "Start": return config.trigger === "FormSubmitted" ? `When "${forms.find(form => form.id === config.formId)?.name ?? "a form"}" is submitted` : "Started manually";
     case "Condition": return config.expression?.trim() || "No expression yet";
-    case "Approval": return `Approver: ${config.assigneeRole ? roleLabels[config.assigneeRole] : "not set"}`;
+    case "Approval": return `Approver: ${config.assigneeRole || "not set"}`;
     default: return `Outcome: ${config.outcome?.trim() || "not set"}`;
   }
 }
@@ -93,6 +93,7 @@ function Designer({ initialWorkflow }: { initialWorkflow: WorkflowDetail }) {
   // Completeness issues are computed by the server for the last saved graph.
   const [issues, setIssues] = useState<WorkflowIssue[]>(draft.issues ?? []);
   const [forms, setForms] = useState<FormOption[]>([]);
+  const [roleNames, setRoleNames] = useState<string[]>(builtInRoles);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -107,6 +108,7 @@ function Designer({ initialWorkflow }: { initialWorkflow: WorkflowDetail }) {
 
   useEffect(() => {
     let cancelled = false;
+    apiRequest<OrganizationRoleItem[]>("/api/roles").then(rows => { if (!cancelled) setRoleNames(rows.filter(role => role.isActive).map(role => role.name)); }).catch(() => { /* Built-in roles stay available. */ });
     apiRequest<FormOption[]>("/api/forms").then(rows => { if (!cancelled) setForms(rows); }).catch(() => { /* The form picker stays empty; saving reports problems. */ });
     return () => { cancelled = true; };
   }, []);
@@ -274,8 +276,9 @@ function Designer({ initialWorkflow }: { initialWorkflow: WorkflowDetail }) {
           <small className="helper">Compare workflow values with ==, !=, &lt;, &lt;=, &gt;, &gt;= and combine with &amp;&amp;, ||, !. No code is run.</small>
           {triggerFields.length > 0 && <small className="helper">Form values: {triggerFields.map((field, index) => <span key={field.id}>{index > 0 && ", "}<code title={field.label}>request.{field.key}</code></span>)}</small>}</label>}
         {selected.data.nodeType === "Approval" && <>
-          <label className="field">Approver role<select value={config.assigneeRole ?? ""} disabled={busy} onChange={event => update({ config: { assigneeRole: (event.target.value || null) as WorkflowNodeConfig["assigneeRole"] } })}>
-            {Object.keys(roleLabels).map(role => <option key={role} value={role}>{role}</option>)}</select></label>
+          <label className="field">Approver role<select value={config.assigneeRole ?? ""} disabled={busy} onChange={event => update({ config: { assigneeRole: event.target.value || null } })}>
+            {config.assigneeRole && !roleNames.includes(config.assigneeRole) && <option value={config.assigneeRole}>{config.assigneeRole} (inactive)</option>}
+            {roleNames.map(role => <option key={role} value={role}>{role}</option>)}</select></label>
           <label className="field">Instructions<textarea maxLength={1000} value={config.instructions ?? ""} disabled={busy} placeholder="What should the approver check?" onChange={event => update({ config: { instructions: event.target.value } })} /></label>
         </>}
         {selected.data.nodeType === "End" && <label className="field">Outcome<input maxLength={80} value={config.outcome ?? ""} disabled={busy} placeholder="Approved" onChange={event => update({ config: { outcome: event.target.value } })} /></label>}

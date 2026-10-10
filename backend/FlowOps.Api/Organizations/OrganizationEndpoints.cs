@@ -75,7 +75,8 @@ public static class OrganizationEndpoints
         if (await ManagerRole(db, context, organizationId) is null) return Results.Forbid();
         var members = await db.OrganizationMembers.Where(x => x.OrganizationId == organizationId)
             .OrderBy(x => x.User.DisplayName)
-            .Select(x => new { x.UserId, x.User.Email, x.User.DisplayName, x.Role, x.JoinedAt })
+            .Select(x => new { x.UserId, x.User.Email, x.User.DisplayName, x.Role, x.RoleId,
+                RoleName = db.CustomRoles.Where(r => r.Id == x.RoleId).Select(r => r.Name).FirstOrDefault() ?? x.Role, x.JoinedAt })
             .ToListAsync();
         return Results.Ok(members);
     }
@@ -90,47 +91,82 @@ public static class OrganizationEndpoints
             return Results.BadRequest(new { error = "Enter a valid email address." });
         var manager = await ManagerRole(db, context, organizationId);
         if (manager is null) return Results.Forbid();
-        if (request.Role is not (OrganizationRoles.Member or OrganizationRoles.Admin)
-            || (request.Role == OrganizationRoles.Admin && manager != OrganizationRoles.Owner))
+        var assignment = await ResolveRole(db, organizationId, request.Role);
+        if (assignment is null) return Results.BadRequest(new { error = "Select an active role from this organization." });
+        if (assignment.BaseRole == OrganizationRoles.Owner
+            || (assignment.BaseRole == OrganizationRoles.Admin && manager != OrganizationRoles.Owner))
             return Results.Forbid();
-        var user = await AuthEndpoints.FindAccount(users, request.Email,
-            request.Role == OrganizationRoles.Member ? "Portal" : "Studio");
+        var surface = assignment.BaseRole == OrganizationRoles.Member ? "Portal" : "Studio";
+        var user = await AuthEndpoints.FindAccount(users, request.Email, surface);
         if (user is null || user.IsDisabled || !user.EmailConfirmed)
-            return Results.NotFound(new { error = $"No confirmed {(request.Role == OrganizationRoles.Member ? "Portal" : "Studio")} account was found for this email. Ask the user to register on that site and confirm their email first." });
+            return Results.NotFound(new { error = $"No confirmed {surface} account was found for this email. Ask the user to register on that site and confirm their email first." });
         if (await db.OrganizationMembers.AnyAsync(x => x.OrganizationId == organizationId && x.UserId == user.Id))
             return Results.Conflict(new { error = "This user is already a member." });
         db.OrganizationMembers.Add(new OrganizationMember
         {
-            OrganizationId = organizationId, UserId = user.Id, Role = request.Role
+            OrganizationId = organizationId, UserId = user.Id, Role = assignment.BaseRole, RoleId = assignment.RoleId
         });
         AuditService.Append(db, "organization.member_added",
             AuthEndpoints.CurrentSession(context)!.UserId, user.Id, organizationId);
         await db.SaveChangesAsync();
         return Results.Created($"/api/organizations/{organizationId}/members/{user.Id}",
-            new { user.Id, user.Email, Role = request.Role });
+            new { user.Id, user.Email, Role = assignment.BaseRole, RoleName = assignment.Name });
     }
 
-    // Roles are tied to account surfaces (Admin = Studio account, Member = Portal account) and an account never
-    // changes surface, so with today's two assignable roles this endpoint cannot move anyone between them; to make
-    // a Member an Admin, add that person's Studio account. It is kept for future roles within one surface.
+    // Roles are tied to account surfaces (Admin-level = Studio account, Member-level = Portal account) and an account never
+    // changes surface. A role on the same level is a plain change; a role on the other level moves the membership to the
+    // same email's confirmed account on the other site (PHASE6), so the Owner can pick any role from one list.
     private static async Task<IResult> ChangeRole(Guid organizationId, string userId,
-        ChangeRoleRequest request, HttpContext context, FlowOpsDbContext db)
+        ChangeRoleRequest request, HttpContext context, FlowOpsDbContext db, UserManager<FlowUser> users,
+        IConfiguration config, FlowOps.Api.Email.IEmailDelivery emailDelivery, ILoggerFactory loggerFactory)
     {
         var manager = await ManagerRole(db, context, organizationId);
         if (manager != OrganizationRoles.Owner) return Results.Forbid();
-        if (request.Role is not (OrganizationRoles.Member or OrganizationRoles.Admin))
-            return Results.BadRequest(new { error = "Role must be Admin or Member." });
+        var assignment = await ResolveRole(db, organizationId, request.Role);
+        if (assignment is null || assignment.BaseRole == OrganizationRoles.Owner)
+            return Results.BadRequest(new { error = "Select an active role from this organization." });
         var member = await db.OrganizationMembers.FirstOrDefaultAsync(x => x.OrganizationId == organizationId
             && x.UserId == userId);
         if (member is null) return Results.NotFound();
         if (member.Role == OrganizationRoles.Owner) return Results.Conflict(new { error = "Owner role cannot be changed." });
-        var accountSurface = await db.Users.Where(x => x.Id == userId).Select(x => x.AccountSurface).SingleAsync();
-        if ((request.Role == OrganizationRoles.Admin) != (accountSurface == "Studio"))
-            return Results.BadRequest(new { error = "Admin roles require a Studio account; Member roles require a Portal account." });
-        member.Role = request.Role;
-        AuditService.Append(db, "organization.member_role_changed",
-            AuthEndpoints.CurrentSession(context)!.UserId, userId, organizationId);
+        var account = await db.Users.Where(x => x.Id == userId).Select(x => new { x.Email, x.DisplayName, x.AccountSurface }).SingleAsync();
+        var targetSurface = assignment.BaseRole == OrganizationRoles.Admin ? "Studio" : "Portal";
+        var actor = AuthEndpoints.CurrentSession(context)!.UserId;
+        if (account.AccountSurface == targetSurface)
+        {
+            member.Role = assignment.BaseRole;
+            member.RoleId = assignment.RoleId;
+            AuditService.Append(db, "organization.member_role_changed", actor, userId, organizationId);
+            await db.SaveChangesAsync();
+            return Results.NoContent();
+        }
+        // Crossing levels: the person continues with their account on the other site. If they have none, it is created from
+        // this one (same verified email, no password yet) and they receive a link to set a password.
+        if (account.Email is null) return Results.BadRequest(new { error = "This account has no email address.", code = "account_missing" });
+        var other = await AuthEndpoints.FindAccount(users, account.Email, targetSurface);
+        var provisioned = false;
+        if (other is null)
+        {
+            other = await AuthEndpoints.ProvisionAccount(users, account.Email, account.DisplayName, targetSurface);
+            if (other is null) return Results.BadRequest(new { error = $"A {targetSurface} account could not be created for {account.Email}.", code = "account_missing" });
+            provisioned = true;
+        }
+        else if (other.IsDisabled || !other.EmailConfirmed)
+            return Results.BadRequest(new { error = $"The {targetSurface} account for {account.Email} is disabled or not confirmed.", code = "account_unavailable" });
+        if (await db.OrganizationMembers.AnyAsync(x => x.OrganizationId == organizationId && x.UserId == other.Id))
+            return Results.Conflict(new { error = $"The {targetSurface} account for {account.Email} is already a member. Remove one of the two first.", code = "account_already_member" });
+        db.OrganizationMembers.Remove(member);
+        db.OrganizationMembers.Add(new OrganizationMember { OrganizationId = organizationId, UserId = other.Id, Role = assignment.BaseRole, RoleId = assignment.RoleId, JoinedAt = member.JoinedAt });
+        var sessions = await db.BrowserSessions.Where(x => x.UserId == userId && x.ActiveOrganizationId == organizationId).ToListAsync();
+        foreach (var session in sessions) { session.ActiveOrganizationId = null; session.RevokedAt ??= DateTimeOffset.UtcNow; }
+        AuditService.Append(db, "organization.member_role_changed", actor, other.Id, organizationId);
+        if (provisioned) AuditService.Append(db, "account.provisioned", actor, other.Id, organizationId);
         await db.SaveChangesAsync();
+        if (provisioned)
+        {
+            var organizationName = await db.Organizations.Where(x => x.Id == organizationId).Select(x => x.Name).SingleAsync();
+            await AuthEndpoints.SendPasswordSetupEmail(users, config, emailDelivery, loggerFactory, other, organizationName);
+        }
         return Results.NoContent();
     }
 
@@ -153,6 +189,20 @@ public static class OrganizationEndpoints
             AuthEndpoints.CurrentSession(context)!.UserId, userId, organizationId);
         await db.SaveChangesAsync();
         return Results.NoContent();
+    }
+
+    private sealed record RoleAssignment(string BaseRole, Guid? RoleId, string Name);
+
+    // A built-in role name (Admin or Member) or an active custom role of the organization, by name.
+    private static async Task<RoleAssignment?> ResolveRole(FlowOpsDbContext db, Guid organizationId, string? name)
+    {
+        name = name?.Trim();
+        if (string.IsNullOrEmpty(name)) return null;
+        if (name is OrganizationRoles.Admin or OrganizationRoles.Member) return new(name, null, name);
+        if (name == OrganizationRoles.Owner) return new(OrganizationRoles.Owner, null, name);
+        var normalized = RoleEndpoints.Normalize(name);
+        var role = await db.CustomRoles.AsNoTracking().SingleOrDefaultAsync(x => x.OrganizationId == organizationId && x.NormalizedName == normalized && x.IsActive);
+        return role is null ? null : new(role.BaseRole, role.Id, role.Name);
     }
 
     // The MembersManage policy (OrganizationPermissionHandler) has already verified that the route organization is

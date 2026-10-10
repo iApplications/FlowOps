@@ -1538,6 +1538,119 @@ public sealed class SecurityTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Owner_manages_custom_roles_that_route_approval_tasks()
+    {
+        using var studio = NewClient();
+        using var finance = NewClient();
+        using var plain = NewClient();
+        await RegisterAndLogin(studio, "roles-owner@example.test");
+        await RegisterAndLogin(finance, "roles-finance@example.test", "Portal");
+        await RegisterAndLogin(plain, "roles-plain@example.test", "Portal");
+        var organization = await CreateOrganization(studio, "Roles Workspace");
+        var setup = await studio.GetFromJsonAsync<JsonElement>("/api/auth/mfa/setup");
+        await Mutate(studio, HttpMethod.Post, "/api/auth/mfa/enable", new { code = AuthenticatorCode(setup.GetProperty("sharedKey").GetString()!) });
+        var roles = $"/api/organizations/{organization}/roles";
+
+        // Only the Owner creates roles; names are unique and cannot reuse built-in names.
+        Assert.Equal(HttpStatusCode.Created, (await Mutate(studio, HttpMethod.Post, roles, new { name = "Finance", baseRole = "Member" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(studio, HttpMethod.Post, roles, new { name = "finance", baseRole = "Member" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(studio, HttpMethod.Post, roles, new { name = "admin", baseRole = "Member" })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Post, roles, new { name = "Auditor", baseRole = "Owner" })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Post, roles, new { name = "<b>", baseRole = "Member" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Mutate(finance, HttpMethod.Post, roles, new { name = "Hacker", baseRole = "Member" })).StatusCode);
+
+        // Assign: a role name replaces the person's single role; unknown roles are refused.
+        Assert.Equal(HttpStatusCode.Created, (await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/members", new { email = "roles-finance@example.test", role = "Finance" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/members", new { email = "roles-plain@example.test", role = "Member" })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/members", new { email = "roles-plain@example.test", role = "Nobody" })).StatusCode);
+        await Mutate(finance, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        await Mutate(plain, HttpMethod.Post, $"/api/organizations/{organization}/activate");
+        var members = await studio.GetFromJsonAsync<JsonElement>($"/api/organizations/{organization}/members");
+        Assert.Contains(members.EnumerateArray(), x => x.GetProperty("email").GetString() == "roles-finance@example.test"
+            && x.GetProperty("role").GetString() == "Member" && x.GetProperty("roleName").GetString() == "Finance");
+
+        // Approval nodes may target the custom role; unknown roles are rejected.
+        var workflowId = (await (await Mutate(studio, HttpMethod.Post, "/api/workflows", new { name = "Finance review" })).Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var path = $"/api/workflows/{workflowId}";
+        object Graph(string role) => new
+        {
+            schemaVersion = 1,
+            nodes = new object[]
+            {
+                Node("start", "Start", "Start", new { trigger = "Manual" }), Node("review", "Approval", "Finance review", new { assigneeRole = role }, 250),
+                Node("done", "End", "Done", new { outcome = "Approved" }, 500), Node("no", "End", "No", new { outcome = "Rejected" }, 500, 120)
+            },
+            connections = new[] { Link("c1", "start", "next", "review"), Link("c2", "review", "approved", "done"), Link("c3", "review", "rejected", "no") }
+        };
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Put, $"{path}/draft", new { graph = Graph("Nope"), draftRevision = 0 })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"{path}/draft", new { graph = Graph("Finance"), draftRevision = 0 })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Post, $"{path}/publish", new { draftRevision = 1 })).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await StartRun(studio, workflowId, new { amount = 1 })).StatusCode);
+
+        // The task is visible to the Finance role, not to a plain Member; the Owner started the run, so it is not in their inbox.
+        var financeInbox = await finance.GetFromJsonAsync<JsonElement>("/api/portal/tasks");
+        Assert.Equal(1, financeInbox.GetProperty("total").GetInt32());
+        Assert.Equal(0, (await plain.GetFromJsonAsync<JsonElement>("/api/portal/tasks")).GetProperty("total").GetInt32());
+        Assert.Equal(0, (await studio.GetFromJsonAsync<JsonElement>("/api/tasks")).GetProperty("total").GetInt32());
+        var taskId = financeInbox.GetProperty("items")[0].GetProperty("id").GetGuid();
+        Assert.Equal(HttpStatusCode.NotFound, (await plain.GetAsync($"/api/portal/tasks/{taskId}")).StatusCode);
+        Assert.True((await finance.GetFromJsonAsync<JsonElement>($"/api/portal/tasks/{taskId}")).GetProperty("canDecide").GetBoolean());
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(finance, HttpMethod.Post, $"/api/portal/tasks/{taskId}/decision", new { decision = "approve", revision = 0 })).StatusCode);
+
+        // A role in use cannot be deleted; deactivating blocks new picks and assignments but is reversible.
+        var list = await studio.GetFromJsonAsync<JsonElement>(roles);
+        var financeId = list.EnumerateArray().Single(x => x.GetProperty("name").GetString() == "Finance").GetProperty("id").GetGuid();
+        Assert.Equal(HttpStatusCode.Conflict, (await Mutate(studio, HttpMethod.Delete, $"{roles}/{financeId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"{roles}/{financeId}", new { isActive = false })).StatusCode);
+        var detail = await studio.GetFromJsonAsync<JsonElement>(path);
+        var revision = detail.GetProperty("draft").GetProperty("draftRevision").GetInt32();
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Put, $"{path}/draft", new { graph = Graph("Finance"), draftRevision = revision })).StatusCode);
+        var plainId = await FindUserId("roles-plain@example.test");
+        Assert.Equal(HttpStatusCode.BadRequest, (await Mutate(studio, HttpMethod.Put, $"/api/organizations/{organization}/members/{plainId}", new { role = "Finance" })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Mutate(studio, HttpMethod.Put, $"{roles}/{financeId}", new { isActive = true })).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await Mutate(studio, HttpMethod.Put, $"/api/organizations/{organization}/members/{plainId}", new { role = "Finance" })).StatusCode);
+
+        // Choosing a role on the other level moves the person to their account on that site, which must exist first.
+        using var switcher = NewClient();
+        await RegisterAndLogin(switcher, "roles-switch@example.test");
+        Assert.Equal(HttpStatusCode.Created, (await Mutate(studio, HttpMethod.Post, $"/api/organizations/{organization}/members", new { email = "roles-switch@example.test", role = "Admin" })).StatusCode);
+        var studioAccountId = await FindUserId("roles-switch@example.test", "Studio");
+        // The Admin activates this workspace, so its session is bound to it and must die when the account is demoted.
+        Assert.Equal(HttpStatusCode.NoContent, (await Mutate(switcher, HttpMethod.Post, $"/api/organizations/{organization}/activate")).StatusCode);
+        Assert.NotEqual(HttpStatusCode.Unauthorized, (await switcher.GetAsync("/api/studio/access")).StatusCode);
+        // The person has no Portal account yet: it is created (confirmed, no password) and the membership moves to it.
+        Assert.Equal(HttpStatusCode.NoContent, (await Mutate(studio, HttpMethod.Put, $"/api/organizations/{organization}/members/{studioAccountId}", new { role = "Finance" })).StatusCode);
+        using (var check = _factory.Services.CreateScope())
+        {
+            var created = await check.ServiceProvider.GetRequiredService<FlowOpsDbContext>().Users
+                .SingleAsync(x => x.Email == "roles-switch@example.test" && x.AccountSurface == "Portal");
+            Assert.True(created.EmailConfirmed);
+            Assert.Null(created.PasswordHash);
+        }
+        // The demoted Studio session is revoked, so it cannot reach Studio again without signing in.
+        Assert.Equal(HttpStatusCode.Unauthorized, (await switcher.GetAsync("/api/studio/access")).StatusCode);
+        var portalAccountId = await FindUserId("roles-switch@example.test", "Portal");
+        var afterSwitch = (await studio.GetFromJsonAsync<JsonElement>($"/api/organizations/{organization}/members")).EnumerateArray().ToList();
+        Assert.DoesNotContain(afterSwitch, x => x.GetProperty("userId").GetString() == studioAccountId);
+        Assert.Contains(afterSwitch, x => x.GetProperty("userId").GetString() == portalAccountId && x.GetProperty("roleName").GetString() == "Finance");
+
+        // An unused role can be deleted.
+        var temp = await (await Mutate(studio, HttpMethod.Post, roles, new { name = "Temp", baseRole = "Member" })).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(HttpStatusCode.NoContent, (await Mutate(studio, HttpMethod.Delete, $"{roles}/{temp.GetProperty("id").GetGuid()}")).StatusCode);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>();
+        foreach (var action in new[] { "organization.role_created", "organization.role_deactivated", "organization.role_activated", "organization.role_deleted", "organization.member_role_changed" })
+            Assert.True(await db.AuditEvents.AnyAsync(x => x.OrganizationId == organization && x.Action == action), action);
+    }
+
+    private async Task<string> FindUserId(string email, string? surface = null)
+    {
+        using var scope = _factory.Services.CreateScope();
+        return (await scope.ServiceProvider.GetRequiredService<FlowOpsDbContext>().Users.SingleAsync(x => x.Email == email && (surface == null || x.AccountSurface == surface))).Id;
+    }
+
+    [Fact]
     public async Task Requesters_track_their_runs_and_resubmit_after_changes_are_requested()
     {
         using var studio = NewClient();

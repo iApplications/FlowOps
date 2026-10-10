@@ -31,7 +31,8 @@ public static class WorkflowEndpoints
         var graph = draft.Graph;
         // Re-check structure: forms referenced by the trigger may have changed since the draft was saved.
         var forms = await FormStates(db, workflow.OrganizationId, graph.Nodes);
-        if (WorkflowGraphValidation.Validate(graph, forms.ContainsKey) is string error) return Results.BadRequest(new { error });
+        var roles = await ActiveRoleNames(db, workflow.OrganizationId);
+        if (WorkflowGraphValidation.Validate(graph, forms.ContainsKey, roles.Contains) is string error) return Results.BadRequest(new { error });
         var issues = WorkflowGraphCompleteness.Issues(graph, forms);
         if (issues.Count > 0)
             return Results.BadRequest(new { error = $"Resolve {issues.Count} {(issues.Count == 1 ? "issue" : "issues")} before publishing.", code = "workflow_incomplete", issues });
@@ -78,7 +79,8 @@ public static class WorkflowEndpoints
         // Form triggers may only reference forms of this organization; load the referenced IDs in one query.
         var referencedForms = request.Graph?.Nodes?.Select(x => x?.Config?.FormId).OfType<Guid>().Distinct().ToList() ?? [];
         var organizationForms = (await db.Forms.Where(x => x.OrganizationId == workflow.OrganizationId && referencedForms.Contains(x.Id)).Select(x => x.Id).ToListAsync()).ToHashSet();
-        if (WorkflowGraphValidation.Validate(request.Graph, organizationForms.Contains) is string error) return Results.BadRequest(new { error });
+        var roles = await ActiveRoleNames(db, workflow.OrganizationId);
+        if (WorkflowGraphValidation.Validate(request.Graph, organizationForms.Contains, roles.Contains) is string error) return Results.BadRequest(new { error });
         // Store a normalized copy: trimmed labels, settings only as the typed model defines them.
         var graph = request.Graph! with { Nodes = request.Graph.Nodes.Select(x => x with { Label = x.Label.Trim(), Config = x.Config ?? new() }).ToList() };
         draft.GraphJson = JsonSerializer.Serialize(graph);
@@ -170,6 +172,10 @@ public static class WorkflowEndpoints
                 HasUnpublishedChanges = latest is null || latest.GraphJson != draft.GraphJson, draft.UpdatedAt }
         };
     }
+
+    // Names of the organization's active custom roles, which Approval nodes may use besides Owner, Admin and Member (PHASE6).
+    private static async Task<HashSet<string>> ActiveRoleNames(FlowOpsDbContext db, Guid organizationId) =>
+        (await db.CustomRoles.AsNoTracking().Where(x => x.OrganizationId == organizationId && x.IsActive).Select(x => x.Name).ToListAsync()).ToHashSet();
 
     // Name and published state of the organization's forms referenced by Start triggers.
     private static async Task<Dictionary<Guid, (string Name, bool Published)>> FormStates(FlowOpsDbContext db, Guid organizationId, IEnumerable<WorkflowNode> nodes)

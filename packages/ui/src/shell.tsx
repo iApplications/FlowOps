@@ -35,13 +35,15 @@ export function AuthFrame({ surface, title, intro, children }: {
   </main>;
 }
 
-type StudioSection = "overview" | "forms" | "workflows" | "tasks" | "requests";
+type StudioSection = "overview" | "forms" | "workflows" | "tasks" | "requests" | "people" | "roles";
 const studioHeadings: Record<StudioSection, { eyebrow: string; title: string; description: string }> = {
   overview: { eyebrow: "Organization foundation", title: "Workspace overview", description: "Manage access, people, and account security from one place." },
   forms: { eyebrow: "Form builder", title: "Forms", description: "Manage draft forms for your active organization." },
   workflows: { eyebrow: "Workflow designer", title: "Workflows", description: "Design draft workflows for your active organization." },
   tasks: { eyebrow: "Approvals", title: "Tasks", description: "Decide approvals assigned to your role in the active organization." },
   requests: { eyebrow: "Requests", title: "My requests", description: "Requests you started in the active organization." },
+  people: { eyebrow: "Access", title: "People", description: "Who belongs to the active organization and which role each person holds." },
+  roles: { eyebrow: "Access", title: "Roles", description: "Business roles that route approval steps in the active organization." },
 };
 
 export function DashboardShell({ surface, user, children, section = "overview" }: {
@@ -64,7 +66,8 @@ export function DashboardShell({ surface, user, children, section = "overview" }
             <a href="/workflows" aria-current={section === "workflows" ? "page" : undefined}><span className="studio-nav-dot" />Workflows</a>
             <a href="/tasks" aria-current={section === "tasks" ? "page" : undefined}><span className="studio-nav-dot" />Tasks</a>
             <a href="/#organizations"><span className="studio-nav-dot" />Organizations</a>
-            <a href="/#members"><span className="studio-nav-dot" />People</a>
+            <a href="/people" aria-current={section === "people" ? "page" : undefined}><span className="studio-nav-dot" />People</a>
+            <a href="/roles" aria-current={section === "roles" ? "page" : undefined}><span className="studio-nav-dot" />Roles</a>
             <a href="/#security"><span className="studio-nav-dot" />Security</a>
           </nav>
         </div>

@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 export { AuthForm } from "./auth-form";
 export { ConfirmEmail } from "./confirm-email";
 export { WorkspaceAccount } from "./workspace-account";
+export { PeopleDirectory, RoleManager } from "./people-roles";
 export { BrandMark, DashboardShell } from "./shell";
 
 type SurfaceShellProps = {
