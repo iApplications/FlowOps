@@ -3,6 +3,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import type { WorkflowDetail, WorkflowRunDetail as RunDetail, WorkflowRunPage, WorkflowRunStatus } from "@flowops/types";
 import { apiRequest } from "@flowops/api-client";
+import { ApprovalHistory } from "./approval-tasks";
 
 function statusTag(status: WorkflowRunStatus | string) {
   return status === "Failed" || status === "Waiting" ? "tag tag-warning" : "tag";
@@ -91,7 +92,7 @@ export function WorkflowRunDetail({ run }: { run: RunDetail }) {
         <p>Started {when(run.startedAt)}{run.startedBy ? ` by ${run.startedBy}` : ""} · {run.trigger === "Manual" ? "Manual" : "Form submitted"} · Finished {when(run.completedAt)}</p>
         {run.sourceSubmissionId && <p className="helper">Submission <code>{run.sourceSubmissionId}</code></p>}</div>
         <span className={statusTag(run.status)}>{run.status}</span></div>
-      {run.status === "Waiting" && run.waitingNodeId && <p className="notice">Waiting at <strong>{labels.get(run.waitingNodeId) ?? run.waitingNodeId}</strong>. Approval tasks arrive in a later phase.</p>}
+      {run.status === "Waiting" && run.waitingNodeId && <p className="notice">Waiting at <strong>{labels.get(run.waitingNodeId) ?? run.waitingNodeId}</strong>, waiting for an approval decision.</p>}
       {run.errorMessage && <p className="notice" role="alert"><strong>{run.errorCode}</strong>: {run.errorMessage}</p>}
       <div className="submission-detail"><dl>
         <div><dt>Correlation ID</dt><dd><code>{run.correlationId}</code></dd></div>
@@ -99,6 +100,12 @@ export function WorkflowRunDetail({ run }: { run: RunDetail }) {
         <div><dt>Variables</dt><dd><pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>{json(run.variables)}</pre></dd></div>
       </dl></div>
     </section>
+    {run.approvals.map(approval => <section className="panel-card" style={{ marginBottom: 24 }} key={approval.id}>
+      <div className="panel-header"><div><span className="panel-kicker">Approval · {labels.get(approval.nodeId) ?? approval.nodeId}</span><h2>{approval.assigneeRole} approval</h2>
+        <p>Raised {when(approval.createdAt)}{approval.decidedAt ? ` · Decided ${when(approval.decidedAt)}` : ""}</p></div>
+        <span className={statusTag(approval.status)}>{approval.status}</span></div>
+      <ApprovalHistory history={approval.history} />
+    </section>)}
     {run.executions.map(execution => <section className="panel-card" style={{ marginBottom: 24 }} key={execution.id}>
       <div className="panel-header"><div><span className="panel-kicker">Execution {execution.sequence} · {execution.reason}</span><h2>{execution.steps.length} {execution.steps.length === 1 ? "step" : "steps"}</h2>
         <p>{when(execution.startedAt)}{execution.triggeredBy ? ` · ${execution.triggeredBy}` : ""} · Correlation <code>{execution.correlationId}</code></p></div>
