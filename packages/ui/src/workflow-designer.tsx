@@ -6,7 +6,7 @@ import {
   ReactFlow, ReactFlowProvider, Background, Controls, MiniMap, Handle, Position, useReactFlow,
   applyNodeChanges, applyEdgeChanges, type Node, type Edge, type NodeProps, type NodeChange, type EdgeChange, type Connection,
 } from "@xyflow/react";
-import type { OrganizationRoleItem, WorkflowDetail, WorkflowGraph, WorkflowIssue, WorkflowNodeConfig, WorkflowNodeType } from "@flowops/types";
+import type { OrganizationRoleItem, WorkflowDetail, WorkflowGraph, WorkflowIssue, WorkflowNodeConfig, WorkflowNodeType, WorkflowVariable } from "@flowops/types";
 import { apiRequest } from "@flowops/api-client";
 
 // summary and issueCount are display-only values derived at render time; they are never saved.
@@ -14,15 +14,16 @@ type NodeData = { label: string; nodeType: WorkflowNodeType; config: WorkflowNod
 type FlowNode = Node<NodeData>;
 type FormOption = { id: string; name: string; publicationCount: number; fields?: { id: string; label: string; key?: string | null }[] };
 
-const nodeTypeOrder: WorkflowNodeType[] = ["Start", "Condition", "Approval", "End"];
+const nodeTypeOrder: WorkflowNodeType[] = ["Start", "Condition", "Calculation", "Approval", "End"];
 // Output handles per node type; must match WorkflowGraphValidation.OutputHandles on the server.
-const outputs: Record<WorkflowNodeType, string[]> = { Start: ["next"], Condition: ["true", "false"], Approval: ["approved", "rejected"], End: [] };
+const outputs: Record<WorkflowNodeType, string[]> = { Start: ["next"], Condition: ["true", "false"], Calculation: ["next"], Approval: ["approved", "rejected"], End: [] };
 const descriptions: Record<WorkflowNodeType, string> = {
-  Start: "How the workflow begins", Condition: "Branch on true / false", Approval: "Ask a role to approve or reject", End: "Finish with an outcome",
+  Start: "How the workflow begins", Condition: "Branch on true / false", Calculation: "Set variables from values and maths", Approval: "Ask a role to approve or reject", End: "Finish with an outcome",
 };
 const defaults: Record<WorkflowNodeType, { label: string; config: WorkflowNodeConfig }> = {
   Start: { label: "Start", config: { trigger: "Manual" } },
   Condition: { label: "Condition", config: { expression: "" } },
+  Calculation: { label: "Calculation", config: { assignments: [] } },
   Approval: { label: "Approval", config: { assigneeRole: "Admin", instructions: "" } },
   End: { label: "End", config: { outcome: "Completed" } },
 };
@@ -35,6 +36,7 @@ function summary(data: NodeData, forms: FormOption[]) {
   switch (data.nodeType) {
     case "Start": return config.trigger === "FormSubmitted" ? `When "${forms.find(form => form.id === config.formId)?.name ?? "a form"}" is submitted` : "Started manually";
     case "Condition": return config.expression?.trim() || "No expression yet";
+    case "Calculation": return config.assignments?.length ? config.assignments.map(item => item.variable || "?").join(", ") : "No assignments yet";
     case "Approval": return `Approver: ${config.assigneeRole || "not set"}`;
     default: return `Outcome: ${config.outcome?.trim() || "not set"}`;
   }
@@ -54,7 +56,7 @@ function WorkflowNodeCard({ data, selected }: NodeProps<FlowNode>) {
     </div>)}
   </div>;
 }
-const nodeTypes = { Start: WorkflowNodeCard, Condition: WorkflowNodeCard, Approval: WorkflowNodeCard, End: WorkflowNodeCard };
+const nodeTypes = { Start: WorkflowNodeCard, Condition: WorkflowNodeCard, Calculation: WorkflowNodeCard, Approval: WorkflowNodeCard, End: WorkflowNodeCard };
 
 function toFlow(graph: WorkflowGraph): { nodes: FlowNode[]; edges: Edge[] } {
   return {
@@ -71,6 +73,7 @@ function cleanConfig(data: NodeData): WorkflowNodeConfig {
   switch (data.nodeType) {
     case "Start": return config.trigger === "FormSubmitted" ? { trigger: "FormSubmitted", formId: config.formId ?? null } : { trigger: "Manual" };
     case "Condition": return { expression: config.expression ?? "" };
+    case "Calculation": return { assignments: (config.assignments ?? []).map(item => ({ variable: item.variable ?? null, expression: item.expression ?? "" })) };
     case "Approval": return { assigneeRole: config.assigneeRole ?? null, instructions: config.instructions ?? "" };
     default: return { outcome: config.outcome ?? "" };
   }
@@ -94,6 +97,7 @@ function Designer({ initialWorkflow }: { initialWorkflow: WorkflowDetail }) {
   const [issues, setIssues] = useState<WorkflowIssue[]>(draft.issues ?? []);
   const [forms, setForms] = useState<FormOption[]>([]);
   const [roleNames, setRoleNames] = useState<string[]>(builtInRoles);
+  const [variables, setVariables] = useState<WorkflowVariable[]>(draft.graph.variables ?? []);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -168,6 +172,14 @@ function Designer({ initialWorkflow }: { initialWorkflow: WorkflowDetail }) {
     setNodes(current => current.map(node => node.id === selectedId ? { ...node, data: { ...node.data, ...patch, config: { ...node.data.config, ...patch.config } } } : node));
     touch();
   }
+  function updateVariable(index: number, patch: Partial<WorkflowVariable>) {
+    setVariables(current => current.map((item, position) => position === index ? { ...item, ...patch } : item));
+    touch();
+  }
+  function updateAssignment(index: number, patch: { variable?: string | null; expression?: string | null }) {
+    const items = (selected?.data.config.assignments ?? []).map((item, position) => position === index ? { ...item, ...patch } : item);
+    update({ config: { assignments: items } });
+  }
   function removeSelected() {
     if (!selectedId) return;
     setNodes(current => current.filter(node => node.id !== selectedId));
@@ -183,6 +195,7 @@ function Designer({ initialWorkflow }: { initialWorkflow: WorkflowDetail }) {
       nodes: nodes.map(node => ({ id: node.id, type: node.data.nodeType, label: node.data.label,
         position: { x: Math.round(node.position.x), y: Math.round(node.position.y) }, config: cleanConfig(node.data) })),
       connections: edges.map(edge => ({ id: edge.id, source: edge.source, sourceHandle: edge.sourceHandle ?? "", target: edge.target })),
+      variables: variables.map(item => ({ name: item.name.trim(), type: item.type, initialValue: item.initialValue?.trim() ? item.initialValue.trim() : null })),
     };
     try {
       const saved = await apiRequest<WorkflowDetail>(`/api/workflows/${initialWorkflow.id}/draft`, { method: "PUT", body: JSON.stringify({ graph, draftRevision: revision }) });
@@ -241,6 +254,23 @@ function Designer({ initialWorkflow }: { initialWorkflow: WorkflowDetail }) {
           : <span>{issue.message}</span>}
       </li>)}</ul>}
     </div>
+    <details className="wf-variables">
+      <summary><strong>Variables</strong> <span className="tag">{variables.length}</span><small className="helper">Named values the workflow can calculate and branch on, as <code>vars.name</code>.</small></summary>
+      <div className="wf-variables-body">
+        {variables.length === 0 && <p className="helper">No variables yet. Declare one to use it in a Calculation or Condition.</p>}
+        {variables.length > 0 && <div className="wf-variable-row wf-variable-head" aria-hidden="true"><span>Name</span><span>Type</span><span>Starting value</span><span /></div>}
+        {variables.map((item, index) => <div key={index} className="wf-variable-row">
+          <input className="input" aria-label="Variable name" maxLength={32} placeholder="total" value={item.name} disabled={busy} onChange={event => updateVariable(index, { name: event.target.value })} />
+          <select className="select" aria-label="Variable type" value={item.type} disabled={busy} onChange={event => updateVariable(index, { type: event.target.value as WorkflowVariable["type"], initialValue: null })}>
+            <option value="Number">Number</option><option value="Text">Text</option><option value="Boolean">True / false</option></select>
+          {item.type === "Boolean"
+            ? <select className="select" aria-label="Starting value" value={item.initialValue ?? "false"} disabled={busy} onChange={event => updateVariable(index, { initialValue: event.target.value })}><option value="false">Starts false</option><option value="true">Starts true</option></select>
+            : <input className="input" aria-label="Starting value" maxLength={200} placeholder={item.type === "Number" ? "Starts at 0" : "Starts empty"} value={item.initialValue ?? ""} disabled={busy} onChange={event => updateVariable(index, { initialValue: event.target.value })} />}
+          <button type="button" className="text-button text-button-danger" disabled={busy} onClick={() => { setVariables(current => current.filter((_, position) => position !== index)); touch(); }}>Remove</button>
+        </div>)}
+        <button type="button" className="btn" disabled={busy || variables.length >= 20} onClick={() => { setVariables(current => [...current, { name: "", type: "Number", initialValue: null }]); touch(); }}>Add variable</button>
+      </div>
+    </details>
     <div className="wf-designer">
       <div className="designer-palette" aria-label="Add nodes"><h3>Add node</h3>
         {nodeTypeOrder.map(type => <button key={type} type="button" className="btn wf-palette-item" draggable={!(type === "Start" && hasStart)} disabled={busy || (type === "Start" && hasStart)}
@@ -274,7 +304,20 @@ function Designer({ initialWorkflow }: { initialWorkflow: WorkflowDetail }) {
         </>}
         {selected.data.nodeType === "Condition" && <label className="field">Expression<textarea maxLength={500} value={config.expression ?? ""} disabled={busy} placeholder="request.amount >= 500" onChange={event => update({ config: { expression: event.target.value } })} />
           <small className="helper">Compare workflow values with ==, !=, &lt;, &lt;=, &gt;, &gt;= and combine with &amp;&amp;, ||, !. No code is run.</small>
+          {variables.some(item => item.name.trim()) && <small className="helper">Variables: {variables.filter(item => item.name.trim()).map((item, index) => <span key={item.name}>{index > 0 && ", "}<code>vars.{item.name.trim()}</code></span>)}</small>}
           {triggerFields.length > 0 && <small className="helper">Form values: {triggerFields.map((field, index) => <span key={field.id}>{index > 0 && ", "}<code title={field.label}>request.{field.key}</code></span>)}</small>}</label>}
+        {selected.data.nodeType === "Calculation" && <>
+          {(config.assignments ?? []).map((item, index) => <div key={index} className="wf-assignment">
+            <select className="select" aria-label="Variable to set" value={item.variable ?? ""} disabled={busy} onChange={event => updateAssignment(index, { variable: event.target.value || null })}>
+              <option value="">Choose variable…</option>
+              {variables.filter(variable => variable.name.trim()).map(variable => <option key={variable.name} value={variable.name.trim()}>{variable.name.trim()} ({variable.type})</option>)}</select>
+            <input className="input" aria-label="Expression" maxLength={500} placeholder="request.amount * 1.1" value={item.expression ?? ""} disabled={busy} onChange={event => updateAssignment(index, { expression: event.target.value })} />
+            <button type="button" className="text-button text-button-danger" disabled={busy} onClick={() => update({ config: { assignments: (config.assignments ?? []).filter((_, position) => position !== index) } })}>Remove</button>
+          </div>)}
+          <button type="button" className="btn" disabled={busy || (config.assignments?.length ?? 0) >= 10} onClick={() => update({ config: { assignments: [...(config.assignments ?? []), { variable: null, expression: "" }] } })}>Add assignment</button>
+          <small className="helper">Assignments run in order. Use + - * / and brackets with numbers, or copy a single value such as <code>request.amount</code>. Declare variables in Variables above the canvas. No code is run.</small>
+          {triggerFields.length > 0 && <small className="helper">Form values: {triggerFields.map((field, index) => <span key={field.id}>{index > 0 && ", "}<code title={field.label}>request.{field.key}</code></span>)}</small>}
+        </>}
         {selected.data.nodeType === "Approval" && <>
           <label className="field">Approver role<select value={config.assigneeRole ?? ""} disabled={busy} onChange={event => update({ config: { assigneeRole: event.target.value || null } })}>
             {config.assigneeRole && !roleNames.includes(config.assigneeRole) && <option value={config.assigneeRole}>{config.assigneeRole} (inactive)</option>}

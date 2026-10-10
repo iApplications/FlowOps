@@ -48,7 +48,8 @@ Updated: 2026-10-10
 | Phase 5 requester status (slice 3) | Complete: My Requests, plain-language status, request changes and resubmit loop | Merged into Phase 5 (#28) |
 | Phase 5 final acceptance and merge to main | Complete | Merged into main (#31) |
 | Phase 6 roles (slice 1) | Implemented: Owner-managed custom roles with Member/Admin base access, one role per user, role picker on Approval nodes, role-matched tasks, audit events | Automated and browser checks passed 2026-10-10; branch `feat/phase6-roles`, plan in [PHASE6](PHASE6.md) |
-| Phase 6 logic slices and later roadmap phases | Pending | Not started |
+| Phase 6 variables and Calculation (slice 2) | Implemented: declared workflow variables (Number/Text/Boolean), Calculation node with arithmetic and data mapping, typed completeness checks, structured run errors, Variables panel in the designer | Automated and browser checks passed 2026-10-10; branch `feat/phase6-variables-calculation` |
+| Phase 6 Switch, Wait and later roadmap phases | Pending | Not started |
 
 ## Phase 2 roadmap deliverables
 

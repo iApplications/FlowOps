@@ -15,6 +15,7 @@ public static class WorkflowGraphCompleteness
         var incoming = graph.Connections.GroupBy(x => x.Target).ToDictionary(x => x.Key, x => x.Count());
         var starts = graph.Nodes.Where(x => x.Type == WorkflowNodeTypes.Start).ToList();
         var ends = graph.Nodes.Where(x => x.Type == WorkflowNodeTypes.End).ToList();
+        var declared = (graph.Variables ?? []).ToDictionary(x => x.Name, x => x.Type);
 
         if (starts.Count == 0) issues.Add(new("start_missing", "Add a Start node."));
         foreach (var extra in starts.Skip(1)) issues.Add(new("start_multiple", $"{extra.Label}: a workflow has exactly one Start node.", extra.Id));
@@ -29,6 +30,8 @@ public static class WorkflowGraphCompleteness
                 issues.Add(new("output_unconnected", $"{node.Label}: connect the '{handle}' output.", node.Id));
             if (node.Type == WorkflowNodeTypes.Condition && WorkflowExpression.Validate(node.Config?.Expression) is string expressionError)
                 issues.Add(new("expression_invalid", $"{node.Label}: {expressionError}", node.Id));
+            if (node.Type == WorkflowNodeTypes.Condition) CheckVariables(issues, node, [node.Config?.Expression], declared);
+            if (node.Type == WorkflowNodeTypes.Calculation) CheckCalculation(issues, node, declared);
             if (node.Type == WorkflowNodeTypes.Start && node.Config?.Trigger == WorkflowTriggers.FormSubmitted && node.Config.FormId is Guid formId
                 && forms.TryGetValue(formId, out var form) && !form.Published)
                 issues.Add(new("form_unpublished", $"{node.Label}: publish the form \"{form.Name}\" before this workflow can start from it.", node.Id));
@@ -56,6 +59,52 @@ public static class WorkflowGraphCompleteness
         foreach (var loop in Cycles(graph, outgoing))
             issues.Add(new("cycle", $"Remove the loop through {string.Join(" → ", loop.Select(id => nodes[id].Label))}. Loops are not supported yet.", loop[0]));
         return issues;
+    }
+
+    // vars.<name> must be declared. Other roots (request, submission, trigger) are checked at run time.
+    private static void CheckVariables(List<WorkflowIssue> issues, WorkflowNode node, IEnumerable<string?> expressions, Dictionary<string, string> declared)
+    {
+        foreach (var path in expressions.SelectMany(WorkflowExpression.Paths).Distinct())
+        {
+            var parts = path.Split('.');
+            if (parts[0] != "vars") continue;
+            if (parts.Length != 2 || !declared.ContainsKey(parts[1]))
+                issues.Add(new("variable_undeclared", $"{node.Label}: the variable '{path}' is not declared. Declare it in Variables first.", node.Id));
+        }
+    }
+
+    private static void CheckCalculation(List<WorkflowIssue> issues, WorkflowNode node, Dictionary<string, string> declared)
+    {
+        var assignments = node.Config?.Assignments ?? [];
+        if (assignments.Count == 0)
+        {
+            issues.Add(new("calculation_empty", $"{node.Label}: add at least one assignment.", node.Id));
+            return;
+        }
+        CheckVariables(issues, node, assignments.Select(x => x.Expression), declared);
+        // Types are checked statically by evaluating against defaults of the declared variables. Values that only exist at
+        // run time (request.*) make the check inconclusive, which is accepted.
+        var sample = new System.Text.Json.Nodes.JsonObject { ["vars"] = new System.Text.Json.Nodes.JsonObject() };
+        foreach (var (name, type) in declared)
+            sample["vars"]![name] = type switch { WorkflowVariable.Number => 1m, WorkflowVariable.Boolean => false, _ => "" };
+        foreach (var assignment in assignments)
+        {
+            if (string.IsNullOrWhiteSpace(assignment.Variable) || !declared.TryGetValue(assignment.Variable, out var type))
+            {
+                issues.Add(new("variable_undeclared", $"{node.Label}: choose a declared variable to assign to.", node.Id));
+                continue;
+            }
+            if (WorkflowExpression.ValidateCalculation(assignment.Expression) is string syntax)
+            {
+                issues.Add(new("expression_invalid", $"{node.Label}: {assignment.Variable}: {syntax}", node.Id));
+                continue;
+            }
+            var result = WorkflowExpression.Calculate(assignment.Expression, sample);
+            if (result.ErrorCode == "type_mismatch")
+                issues.Add(new("type_mismatch", $"{node.Label}: {assignment.Variable}: {result.ErrorMessage}", node.Id));
+            else if (result.ErrorCode is null && result.Type != type)
+                issues.Add(new("type_mismatch", $"{node.Label}: {assignment.Variable} is {type}, but the expression gives {result.Type}.", node.Id));
+        }
     }
 
     private static HashSet<string> Walk(string start, Func<string, IEnumerable<string>> next)

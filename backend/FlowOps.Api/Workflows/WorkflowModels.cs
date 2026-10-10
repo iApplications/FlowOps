@@ -39,7 +39,8 @@ public sealed class WorkflowVersion
     public DateTimeOffset? PublishedAt { get; set; }
 }
 
-public sealed record WorkflowGraph(int SchemaVersion, List<WorkflowNode> Nodes, List<WorkflowConnection> Connections)
+// Variables are declared per graph (PHASE6) and live under vars.<name> in a run. Older graphs have none.
+public sealed record WorkflowGraph(int SchemaVersion, List<WorkflowNode> Nodes, List<WorkflowConnection> Connections, List<WorkflowVariable>? Variables = null)
 {
     public const int CurrentSchemaVersion = 1;
     public static WorkflowGraph Empty => new(CurrentSchemaVersion, [], []);
@@ -58,7 +59,33 @@ public sealed record WorkflowPosition(double X, double Y);
 
 // One configuration shape for all node types; each type uses only its own properties (validated per type).
 public sealed record WorkflowNodeConfig(string? Trigger = null, Guid? FormId = null, string? Expression = null,
-    string? AssigneeRole = null, string? Instructions = null, string? Outcome = null);
+    string? AssigneeRole = null, string? Instructions = null, string? Outcome = null, List<CalculationAssignment>? Assignments = null);
+
+// A declared workflow variable. InitialValue is text that must parse as the type (Number: decimal, Boolean: true/false).
+public sealed record WorkflowVariable(string Name, string Type, string? InitialValue = null)
+{
+    public const string Number = "Number";
+    public const string Text = "Text";
+    public const string Boolean = "Boolean";
+    public static readonly IReadOnlySet<string> Types = new HashSet<string> { Number, Text, Boolean };
+
+    // Whether InitialValue is acceptable for the type; null and empty mean "use the default" (0, empty text, false).
+    public static bool InitialValueValid(string type, string? value) => string.IsNullOrEmpty(value) || type switch
+    {
+        Number => decimal.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out _),
+        Boolean => value is "true" or "false",
+        _ => true
+    };
+
+    public System.Text.Json.Nodes.JsonNode InitialNode() => Type switch
+    {
+        Number => System.Text.Json.Nodes.JsonValue.Create(string.IsNullOrEmpty(InitialValue) ? 0m : decimal.Parse(InitialValue, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture))!,
+        Boolean => System.Text.Json.Nodes.JsonValue.Create(InitialValue == "true")!,
+        _ => System.Text.Json.Nodes.JsonValue.Create(InitialValue ?? "")!
+    };
+}
+
+public sealed record CalculationAssignment(string? Variable, string? Expression);
 
 public sealed record WorkflowConnection(string Id, string Source, string SourceHandle, string Target);
 
@@ -68,7 +95,8 @@ public static class WorkflowNodeTypes
     public const string Condition = "Condition";
     public const string Approval = "Approval";
     public const string End = "End";
-    public static readonly IReadOnlySet<string> All = new HashSet<string> { Start, Condition, Approval, End };
+    public const string Calculation = "Calculation";
+    public static readonly IReadOnlySet<string> All = new HashSet<string> { Start, Condition, Approval, End, Calculation };
 }
 
 public static class WorkflowTriggers
