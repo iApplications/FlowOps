@@ -75,6 +75,9 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
     public DbSet<FlowOps.Api.Forms.FormAttachment> FormAttachments => Set<FlowOps.Api.Forms.FormAttachment>();
     public DbSet<FlowOps.Api.Workflows.WorkflowDefinition> WorkflowDefinitions => Set<FlowOps.Api.Workflows.WorkflowDefinition>();
     public DbSet<FlowOps.Api.Workflows.WorkflowVersion> WorkflowVersions => Set<FlowOps.Api.Workflows.WorkflowVersion>();
+    public DbSet<FlowOps.Api.Workflows.WorkflowInstance> WorkflowInstances => Set<FlowOps.Api.Workflows.WorkflowInstance>();
+    public DbSet<FlowOps.Api.Workflows.WorkflowExecution> WorkflowExecutions => Set<FlowOps.Api.Workflows.WorkflowExecution>();
+    public DbSet<FlowOps.Api.Workflows.WorkflowExecutionStep> WorkflowExecutionSteps => Set<FlowOps.Api.Workflows.WorkflowExecutionStep>();
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
@@ -112,6 +115,16 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
         if (ChangeTracker.Entries<FlowOps.Api.Workflows.WorkflowVersion>().Any(x => x.State is EntityState.Modified or EntityState.Deleted
                 && x.Property(v => v.Status).OriginalValue == FlowOps.Api.Workflows.WorkflowVersionStatus.Published))
             throw new InvalidOperationException("Published workflow versions are immutable.");
+        // Runtime history: an instance never leaves its version and is never deleted; finished executions and steps are frozen.
+        if (ChangeTracker.Entries<FlowOps.Api.Workflows.WorkflowInstance>().Any(x => x.State == EntityState.Deleted
+                || x.State == EntityState.Modified && x.Property(v => v.WorkflowVersionId).IsModified))
+            throw new InvalidOperationException("Workflow instances stay pinned to their version and are never deleted.");
+        if (ChangeTracker.Entries<FlowOps.Api.Workflows.WorkflowExecution>().Any(x => x.State is EntityState.Modified or EntityState.Deleted
+                && x.Property(v => v.Status).OriginalValue != FlowOps.Api.Workflows.WorkflowRunStatus.Running))
+            throw new InvalidOperationException("Finished workflow executions are immutable.");
+        if (ChangeTracker.Entries<FlowOps.Api.Workflows.WorkflowExecutionStep>().Any(x => x.State is EntityState.Modified or EntityState.Deleted
+                && x.Property(v => v.Status).OriginalValue != FlowOps.Api.Workflows.WorkflowRunStatus.Running))
+            throw new InvalidOperationException("Finished workflow steps are immutable.");
         if (ChangeTracker.Entries<AuditEvent>().Any(x => x.State is EntityState.Modified or EntityState.Deleted))
             throw new InvalidOperationException("Audit events are append-only.");
     }
@@ -171,6 +184,55 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
             entity.HasIndex(x => x.WorkflowDefinitionId).IsUnique().HasFilter("\"Status\" = 'Draft'");
             entity.HasIndex(x => x.OrganizationId);
             entity.HasOne<FlowOps.Api.Workflows.WorkflowDefinition>().WithMany().HasForeignKey(x => x.WorkflowDefinitionId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Restrict);
+        });
+        builder.Entity<FlowOps.Api.Workflows.WorkflowInstance>(entity =>
+        {
+            entity.Property(x => x.Status).HasMaxLength(16);
+            entity.Property(x => x.Trigger).HasMaxLength(32);
+            entity.Property(x => x.WaitingNodeId).HasMaxLength(64);
+            entity.Property(x => x.Outcome).HasMaxLength(80);
+            entity.Property(x => x.IdempotencyKey).HasMaxLength(100);
+            entity.Property(x => x.RequestFingerprint).HasMaxLength(64);
+            entity.Property(x => x.CorrelationId).HasMaxLength(64);
+            entity.Property(x => x.ErrorCode).HasMaxLength(64);
+            entity.Property(x => x.ErrorMessage).HasMaxLength(1000);
+            entity.Property(x => x.Revision).IsConcurrencyToken();
+            entity.HasIndex(x => new { x.OrganizationId, x.WorkflowDefinitionId, x.StartedAt });
+            entity.HasIndex(x => x.WorkflowVersionId);
+            // One run per (version, form submission): form triggers stay idempotent.
+            entity.HasIndex(x => new { x.WorkflowVersionId, x.SourceSubmissionId }).IsUnique().HasFilter("\"SourceSubmissionId\" IS NOT NULL");
+            entity.HasIndex(x => new { x.WorkflowDefinitionId, x.StartedByUserId, x.IdempotencyKey }).IsUnique().HasFilter("\"IdempotencyKey\" IS NOT NULL");
+            entity.HasOne<FlowOps.Api.Workflows.WorkflowDefinition>().WithMany().HasForeignKey(x => x.WorkflowDefinitionId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<FlowOps.Api.Workflows.WorkflowVersion>().WithMany().HasForeignKey(x => x.WorkflowVersionId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<FlowOps.Api.Forms.FormSubmission>().WithMany().HasForeignKey(x => x.SourceSubmissionId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<FlowUser>().WithMany().HasForeignKey(x => x.StartedByUserId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Restrict);
+        });
+        builder.Entity<FlowOps.Api.Workflows.WorkflowExecution>(entity =>
+        {
+            entity.Property(x => x.Reason).HasMaxLength(16);
+            entity.Property(x => x.Status).HasMaxLength(16);
+            entity.Property(x => x.CorrelationId).HasMaxLength(64);
+            entity.Property(x => x.ErrorCode).HasMaxLength(64);
+            entity.Property(x => x.ErrorMessage).HasMaxLength(1000);
+            entity.HasIndex(x => new { x.InstanceId, x.Sequence }).IsUnique();
+            entity.HasOne<FlowOps.Api.Workflows.WorkflowInstance>().WithMany().HasForeignKey(x => x.InstanceId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<FlowUser>().WithMany().HasForeignKey(x => x.TriggeredByUserId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Restrict);
+        });
+        builder.Entity<FlowOps.Api.Workflows.WorkflowExecutionStep>(entity =>
+        {
+            entity.Property(x => x.NodeId).HasMaxLength(64);
+            entity.Property(x => x.NodeType).HasMaxLength(32);
+            entity.Property(x => x.Status).HasMaxLength(16);
+            entity.Property(x => x.CorrelationId).HasMaxLength(64);
+            entity.Property(x => x.ErrorCode).HasMaxLength(64);
+            entity.Property(x => x.ErrorMessage).HasMaxLength(1000);
+            entity.HasIndex(x => new { x.ExecutionId, x.Sequence }).IsUnique();
+            entity.HasIndex(x => x.InstanceId);
+            entity.HasOne<FlowOps.Api.Workflows.WorkflowExecution>().WithMany().HasForeignKey(x => x.ExecutionId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<FlowOps.Api.Workflows.WorkflowInstance>().WithMany().HasForeignKey(x => x.InstanceId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Restrict);
         });
         builder.Entity<FlowUser>().Property(x => x.DisplayName).HasMaxLength(120);

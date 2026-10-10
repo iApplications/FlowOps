@@ -1,6 +1,6 @@
 # FlowOps implementation progress
 
-Updated: 2026-10-08
+Updated: 2026-10-10
 
 ## Branch and approval status
 
@@ -12,7 +12,11 @@ Updated: 2026-10-08
 - Slice 2 (canvas) was merged into `dev/phase3_main` (#15).
 - Slice 3 (validation) was merged into `dev/phase3_main` (#16). Phase 3 is **implementation complete**.
 - Phase 3 is **complete**: approved by the user and merged into `main` on 2026-10-10 (#18). The code on `main` is identical to the tested `dev/phase3_main`.
-- Next phase: Phase 4 Workflow Execution Engine + Core Version Identity, on a new integration branch from `main`.
+- Phase 4 integration branch: `dev/phase4_main`, created from `main` (`3c29a8e`). The plan was approved on 2026-10-10 and is recorded in [Phase 4](PHASE4.md).
+- Slice 1 (publishing) was merged into `dev/phase4_main` (#20).
+- Slice 2 (runtime) was merged into `dev/phase4_main` (#21).
+- Slice 3 (form trigger) was merged into `dev/phase4_main` (#22). Phase 4 is **implementation complete**.
+- Current work branch: `feat/phase4-acceptance` (slice 4: architecture notes, final checklist, docs). Automated checks (60 backend tests) and the final browser pass passed on 2026-10-10; PR into `dev/phase4_main`, then the merge into `main`, pending.
 - No automatic commits or pushes; each merge follows internal testing and user approval.
 
 ## Delivery progress
@@ -33,7 +37,11 @@ Updated: 2026-10-08
 | Phase 3 workflow canvas (slice 2) | Complete: React Flow designer, draft graph save with structural validation, node settings including the Start form trigger | Automated and browser checks passed 2026-10-09; merged into Phase 3 (#15) |
 | Phase 3 workflow validation (slice 3) | Complete: condition expression parser, completeness issues with node references, designer issues panel and highlighting, list issue counts | Automated and browser checks passed 2026-10-10; merged into Phase 3 (#16) |
 | Phase 3 final acceptance and merge to main | Complete | Approved by the user and merged into main 2026-10-10 (#18) |
-| Phase 4 and later roadmap phases | Pending | Not started |
+| Phase 4 workflow publishing (slice 1) | Complete: publish API, immutable versions with next draft, Studio Publish button, published version in list | Automated and browser checks passed 2026-10-10; merged into Phase 4 (#20) |
+| Phase 4 workflow runtime (slice 2) | Complete: runtime tables, node handlers, condition evaluation, durable approval wait and internal resume, idempotent manual runs, run history API and Studio Runs pages | Automated and browser checks passed 2026-10-10; merged into Phase 4 (#21) |
+| Phase 4 form trigger (slice 3) | Implemented: form field keys, runs started from Portal submissions (idempotent per submission), `request.<key>` and `submission.*` variables | Automated and browser checks passed 2026-10-10; merged into Phase 4 (#22) |
+| Phase 4 final acceptance and merge to main | Docs and checklist on `feat/phase4-acceptance` | Automated and browser checks passed 2026-10-10; merge pending |
+| Phase 5 and later roadmap phases | Pending | Not started |
 
 ## Phase 2 roadmap deliverables
 

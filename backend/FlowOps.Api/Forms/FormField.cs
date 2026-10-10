@@ -5,7 +5,7 @@ namespace FlowOps.Api.Forms;
 public sealed record FormField(Guid Id, string Type, string Label, bool Required = false,
     string? HelpText = null, int? MaxLength = null, decimal? Min = null, decimal? Max = null,
     string? MinDate = null, string? MaxDate = null, List<string>? Options = null,
-    int? MaxFileSizeMb = null, List<string>? AcceptedExtensions = null);
+    int? MaxFileSizeMb = null, List<string>? AcceptedExtensions = null, string? Key = null);
 
 public static class FormFieldValidation
 {
@@ -15,11 +15,15 @@ public static class FormFieldValidation
     {
         if (fields is null || fields.Count > 50) return "A form can have at most 50 fields.";
         var ids = new HashSet<Guid>();
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var field in fields)
         {
             if (field is null || field.Id == Guid.Empty || !ids.Add(field.Id)) return "Each field needs a unique ID.";
             if (!Types.Contains(field.Type)) return "Unsupported field type.";
-            if (string.IsNullOrWhiteSpace(field.Label) || field.Label.Trim().Length > 120) return "Field labels must be 1–120 characters.";
+            if (string.IsNullOrWhiteSpace(field.Label) || field.Label.Trim().Length > 120) return "Field labels must be 1â€“120 characters.";
+            if (field.Key is not null && !FormFieldKeys.IsValid(field.Key))
+                return "Field keys must start with a letter and use at most 40 letters, digits or underscores.";
+            if (field.Key is not null && !keys.Add(field.Key)) return $"The key '{field.Key}' is used by more than one field.";
             if ((field.HelpText?.Length ?? 0) > 500) return "Help text must be 500 characters or fewer.";
             if (field.MaxLength is not null && (field.Type is not ("Text" or "Textarea") || field.MaxLength is < 1 or > 10000))
                 return "Text length must be between 1 and 10,000 characters.";
@@ -35,7 +39,7 @@ public static class FormFieldValidation
             {
                 if (field.Options is null || field.Options.Count is < 1 or > 100 || field.Options.Any(x => string.IsNullOrWhiteSpace(x) || x.Length > 120)
                     || field.Options.Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).Count() != field.Options.Count)
-                    return "Dropdowns need 1–100 unique, non-empty options of at most 120 characters.";
+                    return "Dropdowns need 1â€“100 unique, non-empty options of at most 120 characters.";
             }
             else if (field.Options is not null) return "Options apply only to Dropdown fields.";
             if (field.Type == "File")

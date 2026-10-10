@@ -25,6 +25,12 @@ builder.Services.AddSingleton<IEmailDelivery, SmtpEmailDelivery>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<FlowOps.Api.Forms.LocalFileStorage>();
 builder.Services.AddScoped<IAuthorizationHandler, OrganizationPermissionHandler>();
+builder.Services.AddSingleton<FlowOps.Api.Workflows.IWorkflowNodeHandler, FlowOps.Api.Workflows.StartNodeHandler>();
+builder.Services.AddSingleton<FlowOps.Api.Workflows.IWorkflowNodeHandler, FlowOps.Api.Workflows.ConditionNodeHandler>();
+builder.Services.AddSingleton<FlowOps.Api.Workflows.IWorkflowNodeHandler, FlowOps.Api.Workflows.ApprovalNodeHandler>();
+builder.Services.AddSingleton<FlowOps.Api.Workflows.IWorkflowNodeHandler, FlowOps.Api.Workflows.EndNodeHandler>();
+builder.Services.AddScoped<FlowOps.Api.Workflows.WorkflowEngine>();
+builder.Services.AddScoped<FlowOps.Api.Workflows.FormWorkflowTrigger>();
 builder.Services.AddAuthorization(options =>
 {
     foreach (var permission in new[] { Permissions.StudioAccess, Permissions.PortalAccess, Permissions.MembersManage })
@@ -225,6 +231,7 @@ app.MapAuthEndpoints();
 app.MapOrganizationEndpoints();
 FlowOps.Api.Forms.FormEndpoints.MapFormEndpoints(app);
 FlowOps.Api.Workflows.WorkflowEndpoints.MapWorkflowEndpoints(app);
+FlowOps.Api.Workflows.WorkflowRunEndpoints.MapWorkflowRunEndpoints(app);
 app.MapGet("/api/health", () => Results.Ok(new ApiHealthResponse("Healthy", "FlowOps.Api")))
     .WithName("GetApiHealth")
     .WithSummary("Check the FlowOps API status")

@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using FlowOps.Api.Auth;
 using FlowOps.Api.Data;
+using FlowOps.Api.Workflows;
 using Microsoft.EntityFrameworkCore;
 
 namespace FlowOps.Api.Forms;
@@ -67,7 +68,7 @@ public static class SubmissionEndpoints
         return Results.File(storage.PathFor(file), "application/octet-stream", file.FileName);
     }
 
-    private static async Task<IResult> SubmitFiles(Guid formId, HttpContext context, FlowOpsDbContext db, LocalFileStorage storage)
+    private static async Task<IResult> SubmitFiles(Guid formId, HttpContext context, FlowOpsDbContext db, LocalFileStorage storage, FormWorkflowTrigger trigger)
     {
         // The overall body limit is applied before antiforgery reads the form; see UploadRequestLimit in Program.cs.
         if (!context.Request.HasFormContentType || !context.Request.ContentType!.StartsWith("multipart/form-data", StringComparison.OrdinalIgnoreCase))
@@ -99,7 +100,7 @@ public static class SubmissionEndpoints
                 var uploads = new List<FileFingerprint>();
                 foreach (var file in multipart.Files)
                     uploads.Add(new(Guid.Parse(file.Name), LocalFileStorage.CleanFileName(file.FileName), file.Length, await LocalFileStorage.HashAsync(file, context.RequestAborted)));
-                return Retry(existing, session.UserId, publication.Id, Fingerprint(request.Values, uploads));
+                return await Retry(existing, session.UserId, publication, Fingerprint(request.Values, uploads), trigger, context);
             }
             if (await HasNewerVersion(db, publication)) return StaleVersion();
             if (request.Values.Any(x => fileFields.ContainsKey(x.Key) && x.Value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)))
@@ -128,9 +129,11 @@ public static class SubmissionEndpoints
             {
                 var winner = await db.FormSubmissions.AsNoTracking().SingleOrDefaultAsync(x => x.Id == request.RequestId);
                 if (winner is null) throw;
-                return Retry(winner, session.UserId, publication.Id, fingerprint);
+                db.ChangeTracker.Clear();
+                return await Retry(winner, session.UserId, publication, fingerprint, trigger, context);
             }
             committed = true;
+            await trigger.StartRunsAsync(submission, publication, WorkflowRunEndpoints.CorrelationId(context));
             return Results.Created($"/api/portal/forms/{formId}/submissions/{submission.Id}", new { submission.Id, submission.SubmittedAt });
         }
         catch (JsonException) { return Results.BadRequest(new { error = "Invalid submission JSON." }); }
@@ -139,7 +142,7 @@ public static class SubmissionEndpoints
         finally { if (!committed) foreach (var file in savedFiles) storage.Delete(file); }
     }
 
-    private static async Task<IResult> Submit(Guid formId, SubmitFormRequest request, HttpContext context, FlowOpsDbContext db)
+    private static async Task<IResult> Submit(Guid formId, SubmitFormRequest request, HttpContext context, FlowOpsDbContext db, FormWorkflowTrigger trigger)
     {
         var session = AuthEndpoints.CurrentSession(context)!;
         var publication = await db.FormPublications.AsNoTracking().SingleOrDefaultAsync(x => x.Id == request.PublicationId && x.FormId == formId && x.OrganizationId == session.ActiveOrganizationId);
@@ -147,7 +150,7 @@ public static class SubmissionEndpoints
         if (request.RequestId == Guid.Empty || request.Values is null) return Results.BadRequest(new { error = "Provide valid submission values and a request ID." });
         var fingerprint = Fingerprint(request.Values, []);
         var existing = await db.FormSubmissions.AsNoTracking().SingleOrDefaultAsync(x => x.Id == request.RequestId);
-        if (existing is not null) return Retry(existing, session.UserId, publication.Id, fingerprint);
+        if (existing is not null) return await Retry(existing, session.UserId, publication, fingerprint, trigger, context);
         if (await HasNewerVersion(db, publication)) return StaleVersion();
         var errors = SubmissionValidation.Validate(publication.Fields, request.Values);
         if (errors.Count > 0) return Results.ValidationProblem(errors);
@@ -161,8 +164,10 @@ public static class SubmissionEndpoints
         {
             var winner = await db.FormSubmissions.AsNoTracking().SingleOrDefaultAsync(x => x.Id == request.RequestId);
             if (winner is null) throw;
-            return Retry(winner, session.UserId, publication.Id, fingerprint);
+            db.ChangeTracker.Clear();
+            return await Retry(winner, session.UserId, publication, fingerprint, trigger, context);
         }
+        await trigger.StartRunsAsync(submission, publication, WorkflowRunEndpoints.CorrelationId(context));
         return Results.Created($"/api/portal/forms/{formId}/submissions/{submission.Id}", new { submission.Id, submission.SubmittedAt });
     }
 
@@ -182,10 +187,15 @@ public static class SubmissionEndpoints
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
     }
 
-    private static IResult Retry(FormSubmission existing, string userId, Guid publicationId, string fingerprint) =>
-        existing.UserId == userId && existing.PublicationId == publicationId && existing.RequestFingerprint == fingerprint
-            ? Results.Ok(new { existing.Id, existing.SubmittedAt })
-            : Results.Conflict(new { error = "This request ID was already used. Refresh history before submitting another response." });
+    // A matching retry also starts any form-triggered run that the first attempt did not get to.
+    private static async Task<IResult> Retry(FormSubmission existing, string userId, FormPublication publication, string fingerprint,
+        FormWorkflowTrigger trigger, HttpContext context)
+    {
+        if (existing.UserId != userId || existing.PublicationId != publication.Id || existing.RequestFingerprint != fingerprint)
+            return Results.Conflict(new { error = "This request ID was already used. Refresh history before submitting another response." });
+        await trigger.StartRunsAsync(existing, publication, WorkflowRunEndpoints.CorrelationId(context));
+        return Results.Ok(new { existing.Id, existing.SubmittedAt });
+    }
 
     private sealed record FileFingerprint(Guid FieldId, string FileName, long Size, string Sha256);
 }

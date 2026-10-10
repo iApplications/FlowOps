@@ -41,13 +41,13 @@ export function WorkflowLibrary({ organizationName }: { organizationName: string
   }
   return <section className="panel-card" id="workflows" style={{ marginBottom: 24 }}>
     <div className="panel-header"><div><span className="panel-kicker">{organizationName}</span><h2>Workflows</h2>
-      <p>Create workflows, then select one and open the designer to edit its draft version. Publishing and running workflows arrive in a later phase.</p></div><span className="tag">{workflows.length} workflows</span></div>
+      <p>Create workflows, then select one and open the designer to edit and publish its draft version, or view its runs.</p></div><span className="tag">{workflows.length} workflows</span></div>
     {message && <p className="notice" role={failed ? "alert" : "status"}>{message}</p>}
     {loading ? <p className="empty-state">Loading workflows…</p> : workflows.length === 0 ? <p className="empty-state">Create your first workflow for this organization.</p> :
       <div className="org-list">{workflows.map(workflow => <button key={workflow.id} type="button" disabled={busy} className={`org-option ${selectedId === workflow.id ? "org-option-active" : ""}`} onClick={() => select(workflow)}>
         <span><strong>{workflow.name}</strong><small style={{ display: "block" }}>{workflow.description || "No description"}</small></span>
         <span className="designer-actions">
-          <span className="tag">{workflow.draftVersionNumber ? `Draft v${workflow.draftVersionNumber}` : "No draft"}{workflow.publishedVersions ? ` · ${workflow.publishedVersions} published` : ""}</span>
+          <span className="tag">{workflow.latestPublishedVersionNumber ? `Published v${workflow.latestPublishedVersionNumber} · ` : "Not published · "}{workflow.draftVersionNumber ? `Draft v${workflow.draftVersionNumber}` : "No draft"}</span>
           {workflow.issueCount !== null && <span className={workflow.issueCount ? "tag tag-warning" : "tag"}>{workflow.issueCount ? `${workflow.issueCount} ${workflow.issueCount === 1 ? "issue" : "issues"}` : "Complete"}</span>}
         </span>
       </button>)}</div>}
@@ -60,6 +60,7 @@ export function WorkflowLibrary({ organizationName }: { organizationName: string
         <button className="btn btn-primary" disabled={busy}>{busy ? "Saving…" : selectedId ? "Save changes" : "Create workflow"}</button>
         {selectedId && <>
           <a className="btn" href={`/workflows/${selectedId}`} aria-disabled={busy || undefined} onClick={event => { if (busy) event.preventDefault(); }}>Open designer</a>
+          <a className="btn" href={`/workflows/${selectedId}/runs`} aria-disabled={busy || undefined} onClick={event => { if (busy) event.preventDefault(); }}>View runs</a>
           <button type="button" className="btn" disabled={busy} onClick={() => select(null)}>Cancel editing</button>
         </>}
       </div>

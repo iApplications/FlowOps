@@ -514,6 +514,22 @@ WorkflowInstance
 
 Execution inputs and outputs may require redaction before persistence or display. Secrets must never be exposed through the debugger.
 
+### Runtime model (Phase 4)
+
+Phase 4 implements this model in `WorkflowEngine` (`backend/FlowOps.Api/Workflows`):
+
+- **Synchronous, in-process.** A run executes during the request that triggers it: a manual `POST /api/workflows/{id}/runs` or a saved Portal form submission. There is no queue or worker until Phase 8.
+- **Pinned version.** A trigger resolves the latest Published `WorkflowVersion` and creates a `WorkflowInstance` pinned to its `WorkflowVersionId`. The engine executes that version's frozen `GraphJson`, so later publishing never changes a running or waiting instance.
+- **Activations.** Each start or resume is one `WorkflowExecution` (Reason `Start` or `Resume`, increasing `Sequence`). The loop runs one `IWorkflowNodeHandler` per node, records a `WorkflowExecutionStep` with input, output, status and duration, and follows the connection for the output the handler chose. It stops at an End node (instance Completed with the End's outcome), a durable wait (Approval: instance Waiting with `WaitingNodeId`), a failure, or after 200 steps.
+- **One write per activation.** The instance state, the execution, all its steps and the audit events (`workflow.instance_started`, `…_completed`, `…_failed`) are saved together. The instance revision is a concurrency token, so two resumes cannot both continue.
+- **Resume.** `ResumeAsync(instance, nodeId, output)` is internal in Phase 4 (Phase 5 approval tasks call it). It only accepts the waiting node and one of its outputs (`approved`/`rejected`).
+- **Failures.** A handler failure sets `ErrorCode`/`ErrorMessage` on the step, the execution and the instance, which becomes Failed. There are no automatic retries; a failed form-triggered run does not fail the submission.
+- **Immutability.** Finished executions and steps cannot be modified, and an instance never changes its version or is deleted (DbContext guard).
+- **Idempotency.** Manual runs accept an `Idempotency-Key` (unique per workflow and user). Form triggers are unique per (workflow version, form submission), so a retried submission starts only missing runs.
+- **Correlation.** A well-formed `X-Correlation-ID` request header is used, otherwise one is generated; it is echoed on the response and stored on the instance, executions and steps.
+
+Instance statuses are Running, Waiting, Completed, Failed and Cancelled (Cancelled is reserved; nothing cancels a run yet). Executions and steps use Running, Waiting, Completed and Failed.
+
 ---
 
 ## 8. Node Interface
@@ -601,7 +617,25 @@ The parser rejects everything else, including:
 - chained comparisons (`1 < a < 3`)
 - statement separators and shell characters (`;`, `` ` ``, `$`)
 
-Expressions are limited to 500 characters, 200 tokens and 32 levels of nesting. Phase 3 checks syntax only; evaluation against the workflow context and variable typing arrive with conditional routing in Phase 6.
+Expressions are limited to 500 characters, 200 tokens and 32 levels of nesting.
+
+### Expression evaluation (Phase 4)
+
+`WorkflowExpression.Evaluate` walks the parsed tree against the instance context; nothing is compiled or executed as code.
+
+- **Values:** numbers (decimal), text, `true`/`false` and empty. A path such as `request.amount` reads the context; JSON `null` and unanswered form fields are empty values.
+- **Comparisons:** `==` and `!=` work on any two values of the same type, and anything compared with empty. `<`, `<=`, `>`, `>=` need two numbers or two texts (ordinal).
+- **Logic:** `!`, `&&` and `||` need true/false; `&&` and `||` short-circuit, so `request.urgent || request.amount > 1` does not read `amount` when `urgent` is true.
+- **Errors fail the run:** `variable_missing` for a path that is not in the context, and `type_mismatch` for mixed types, a path that holds a group of values (object or list), or a final result that is not true/false.
+
+Run variables:
+
+| Trigger | Variables |
+|---|---|
+| Manual | `request.*` (the JSON sent with the run), `trigger.type`, `trigger.startedAt` |
+| Form submitted | `request.<fieldKey>` for every field of the submitted form version, `submission.id`, `submission.formId`, `submission.formVersion`, `submission.submittedAt`, `trigger.type` |
+
+Form field keys (`amount`, `isUrgent`) are generated from labels and editable in the form designer. Phase 6 adds switch/calculation nodes and declared variable types.
 
 ### Workflow graph format (Phase 3)
 
@@ -623,7 +657,7 @@ Validation has two levels:
 - **Structural rules reject a save.** They cover limits, IDs, per-type settings, valid outputs, self-connections, and at most one connection per output.
 - **Completeness issues are reported but allowed in a draft.** They cover exactly one Start, at least one End, connected outputs, reachability from Start, a path to an End, cycles, expression syntax and published Start forms.
 
-Phase 4 publishing is expected to require zero completeness issues.
+Phase 4 publishing requires zero completeness issues and a graph that differs from the latest Published version.
 
 ---
 

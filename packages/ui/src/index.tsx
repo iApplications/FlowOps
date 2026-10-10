@@ -28,3 +28,4 @@ export { FormDesigner } from "./form-designer";
 export { FormRenderer } from "./form-renderer";
 export { PortalForm, SubmissionHistory } from "./form-submissions";
 export { WorkflowLibrary } from "./workflow-library";
+export { WorkflowRuns, WorkflowRunDetail } from "./workflow-runs";
