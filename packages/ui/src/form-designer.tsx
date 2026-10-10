@@ -6,6 +6,15 @@ import { apiRequest } from "@flowops/api-client";
 import { FormRenderer } from "./form-renderer";
 
 const fieldTypes: FormFieldType[] = ["Text", "Textarea", "Number", "Currency", "Date", "Dropdown", "Checkbox", "File"];
+// Mirrors the server's label-derived key ("Amount (USD)" → "amountUsd"), shown until the field is saved.
+function keyFromLabel(label: string) {
+  const words = label.split(/[^A-Za-z0-9]+/).filter(Boolean);
+  let key = words.map((word, index) => index === 0 ? word.toLowerCase() : word[0].toUpperCase() + word.slice(1).toLowerCase()).join("");
+  if (!key || /^[0-9]/.test(key)) key = "field" + key;
+  if (key === "true" || key === "false") key += "Value";
+  return key.slice(0, 40);
+}
+
 export function FormDesigner({ initialForm }: { initialForm: FormDraft }) {
   const [fields, setFields] = useState(initialForm.fields);
   const [revision, setRevision] = useState(initialForm.draftRevision);
@@ -93,7 +102,9 @@ export function FormDesigner({ initialForm }: { initialForm: FormDraft }) {
           </div>)}</div>
         <div className="stack-form"><h3>Field settings</h3>{selected ? <>
           <label className="field">Label<input maxLength={120} value={selected.label} onChange={event => patch({ label: event.target.value })} /></label>
-          <label className="field">Help text<textarea maxLength={500} value={selected.helpText ?? ""} onChange={event => patch({ helpText: event.target.value })} /></label>
+          <label className="field">Workflow key<input maxLength={40} value={selected.key ?? ""} placeholder={keyFromLabel(selected.label)} pattern="[A-Za-z_][A-Za-z0-9_]*" onChange={event => patch({ key: event.target.value.trim() || null })} />
+            <small className="helper">Workflow conditions read this answer as <code>request.{selected.key || keyFromLabel(selected.label)}</code>. Letters, digits and underscores; generated from the label if left empty.</small></label>
+            <label className="field">Help text<textarea maxLength={500} value={selected.helpText ?? ""} onChange={event => patch({ helpText: event.target.value })} /></label>
           <label><input type="checkbox" checked={selected.required} onChange={event => patch({ required: event.target.checked })} /> Required</label>
           {(selected.type === "Text" || selected.type === "Textarea") && <label className="field">Maximum characters<input type="number" min={1} max={10000} value={selected.maxLength ?? ""} onChange={event => patch({ maxLength: event.target.value === "" ? null : Number(event.target.value) })} /></label>}
           {(selected.type === "Number" || selected.type === "Currency") && <>{(["min", "max"] as const).map(limit => <label className="field" key={limit}>{limit === "min" ? "Minimum" : "Maximum"}<input type="number" step={selected.type === "Currency" ? "0.01" : "any"} value={selected[limit] ?? ""} onChange={event => patch({ [limit]: event.target.value === "" ? null : Number(event.target.value) })} /></label>)}</>}

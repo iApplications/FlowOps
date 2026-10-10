@@ -96,7 +96,7 @@ public static class FormEndpoints
         if (form is null) return Results.NotFound(new { error = "Form not found in the active organization." });
         if (request.DraftRevision != form.DraftRevision) return Results.Conflict(new { error = "This draft changed in another session. Reload it before saving." });
         if (FormFieldValidation.Validate(request.Fields) is string error) return Results.BadRequest(new { error });
-        form.FieldsJson = System.Text.Json.JsonSerializer.Serialize(request.Fields);
+        form.FieldsJson = System.Text.Json.JsonSerializer.Serialize(FormFieldKeys.Assign(request.Fields!));
         form.DraftRevision++;
         form.UpdatedAt = DateTimeOffset.UtcNow;
         AuditService.Append(db, "form.fields_updated", session.UserId, form.Id.ToString(), form.OrganizationId);
