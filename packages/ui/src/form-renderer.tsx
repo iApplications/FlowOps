@@ -36,11 +36,15 @@ export function FormRenderer({ fields, title, description, readOnly = false, onS
     {fields.map(field => {
       const inputId = `preview-${field.id}`;
       const common = { id: inputId, name: field.id, required: field.required, disabled: readOnly || busy, "aria-describedby": field.helpText ? `${inputId}-help` : undefined };
+      if (field.type === "Checkbox") return <div className="field field-check" key={field.id}>
+        <input {...common} type="checkbox" />
+        <label htmlFor={inputId}>{field.label}{field.required ? " *" : ""}</label>
+        {field.helpText && <small className="helper" id={`${inputId}-help`}>{field.helpText}</small>}
+      </div>;
       return <div className="field" key={field.id}>
         <label htmlFor={inputId}>{field.label}{field.required ? " *" : ""}</label>
         {field.type === "Textarea" ? <textarea {...common} maxLength={field.maxLength ?? 10000} /> :
           field.type === "Dropdown" ? <select {...common}><option value="">Choose an option</option>{field.options?.map((option, index) => <option key={index} value={option}>{option}</option>)}</select> :
-          field.type === "Checkbox" ? <input {...common} type="checkbox" /> :
           field.type === "File" ? <><input {...common} type="file" accept={field.acceptedExtensions?.join(",")} onChange={event => {
             const file = event.target.files?.[0];
             const extension = file ? `.${file.name.split(".").pop()?.toLowerCase()}` : "";

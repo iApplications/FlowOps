@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
-import type { ApprovalTaskDecision, ApprovalTaskDetail, ApprovalTaskEvent, ApprovalTaskPage, ApprovalTaskStatus } from "@flowops/types";
+import type { ApprovalTaskDecision, ApprovalTaskDetail, ApprovalTaskEvent, ApprovalTaskPage, ApprovalTaskStatus, FormField, MyRequestDetail, MyRequestPage } from "@flowops/types";
 import { apiRequest } from "@flowops/api-client";
 
 // Shared by Portal (`/api/portal/tasks`) and Studio (`/api/tasks`): the same task API behind two surfaces (PHASE5 decision 3).
@@ -24,7 +24,57 @@ function statusTag(status: ApprovalTaskStatus) {
 
 function display(value: unknown) {
   if (value === null || value === undefined || value === "") return "—";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
   return typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+
+// The requester edits the values of the form version they submitted and resubmits; files carry over from the original response.
+function ResubmitForm({ fields, request, busy, onSubmit }: {
+  fields: FormField[]; request: Record<string, unknown> | null; busy: boolean;
+  onSubmit: (values: Record<string, string | number | boolean | null>, comment: string) => void;
+}) {
+  const key = (field: FormField) => field.key ?? field.id;
+  const [values, setValues] = useState<Record<string, string | boolean>>(() => Object.fromEntries(fields.filter(f => f.type !== "File").map(field => {
+    const current = request?.[key(field)];
+    return [key(field), field.type === "Checkbox" ? current === true : current === null || current === undefined ? "" : String(current)];
+  })));
+  const [comment, setComment] = useState("");
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (busy) return;
+    const out: Record<string, string | number | boolean | null> = {};
+    for (const field of fields) {
+      if (field.type === "File") continue;
+      const raw = values[key(field)];
+      out[key(field)] = field.type === "Checkbox" ? raw === true : raw === "" ? null : field.type === "Number" || field.type === "Currency" ? Number(raw) : String(raw);
+    }
+    onSubmit(out, comment.trim());
+  }
+  return <form onSubmit={submit} className="stack-form">
+    {fields.map(field => {
+      const id = `resubmit-${field.id}`;
+      const k = key(field);
+      const common = { id, required: field.required, disabled: busy };
+      if (field.type === "File") return <div className="field" key={field.id}><label>{field.label}</label><small className="helper">{display(request?.[k])} · files stay as originally submitted.</small></div>;
+      if (field.type === "Checkbox") return <div className="field field-check" key={field.id}>
+        <input {...common} type="checkbox" checked={values[k] === true} onChange={e => setValues({ ...values, [k]: e.target.checked })} />
+        <label htmlFor={id}>{field.label}{field.required ? " *" : ""}</label>
+        {field.helpText && <small className="helper">{field.helpText}</small>}
+      </div>;
+      return <div className="field" key={field.id}>
+        <label htmlFor={id}>{field.label}{field.required ? " *" : ""}</label>
+        {field.type === "Textarea" ? <textarea {...common} rows={4} maxLength={field.maxLength ?? 10000} value={String(values[k])} onChange={e => setValues({ ...values, [k]: e.target.value })} /> :
+          field.type === "Dropdown" ? <select {...common} value={String(values[k])} onChange={e => setValues({ ...values, [k]: e.target.value })}><option value="">Choose an option</option>{field.options?.map((option, index) => <option key={index} value={option}>{option}</option>)}</select> :
+          <input {...common} type={field.type === "Date" ? "date" : field.type === "Number" || field.type === "Currency" ? "number" : "text"} value={String(values[k])}
+            maxLength={field.type === "Text" ? field.maxLength ?? 10000 : undefined} min={field.type === "Date" ? field.minDate ?? undefined : field.min ?? undefined}
+            max={field.type === "Date" ? field.maxDate ?? undefined : field.max ?? undefined} step={field.type === "Currency" ? "0.01" : "any"}
+            onChange={e => setValues({ ...values, [k]: e.target.value })} />}
+        {field.helpText && <small className="helper">{field.helpText}</small>}
+      </div>;
+    })}
+    <label className="field">Note to the approver<textarea className="task-comment" rows={3} maxLength={2000} value={comment} disabled={busy} placeholder="Optional: what did you change?" onChange={e => setComment(e.target.value)} /></label>
+    <div className="designer-actions task-actions"><button className="btn btn-primary" disabled={busy}>{busy ? "Resubmitting…" : "Resubmit for approval"}</button></div>
+  </form>;
 }
 
 export function ApprovalHistory({ history }: { history: ApprovalTaskEvent[] }) {
@@ -106,6 +156,17 @@ export function TaskDetail({ surface, initial }: { surface: TaskSurface; initial
     finally { setBusy(false); }
   }
 
+  async function resubmit(values: Record<string, string | number | boolean | null>, note: string) {
+    setBusy(true); setMessage(""); setFailed(false);
+    try {
+      setTask(await call<ApprovalTaskDetail>("resubmit", { values, comment: note || undefined, revision: task.revision }));
+      setMessage("Resubmitted. The approver will review your changes.");
+    } catch (error) {
+      setFailed(true); setMessage(error instanceof Error ? error.message : "Unable to resubmit.");
+      try { setTask(await apiRequest<ApprovalTaskDetail>(`${surface.apiBase}/${task.id}`)); } catch { /* keep what is shown */ }
+    } finally { setBusy(false); }
+  }
+
   const values = Object.entries(task.request ?? {});
   return <>
     <section className="panel-card" style={{ marginBottom: 24 }}>
@@ -117,9 +178,15 @@ export function TaskDetail({ surface, initial }: { surface: TaskSurface; initial
         {values.length === 0 ? <div><dt>Request</dt><dd>No values.</dd></div> : values.map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{display(value)}</dd></div>)}
       </dl></div>
     </section>
+    {task.canResubmit && task.fields && <section className="panel-card" style={{ marginBottom: 24 }}>
+      <div className="panel-header"><div><span className="panel-kicker">Changes requested</span><h2>Update your request</h2>
+        <p>The approver asked for changes (see the history below). Update the values and resubmit; the same request goes back for a decision.</p></div></div>
+      <ResubmitForm key={task.revision} fields={task.fields} request={task.request} busy={busy} onSubmit={resubmit} />
+      {message && <p className={failed ? "notice" : "notice notice-success"} role={failed ? "alert" : "status"}>{message}</p>}
+    </section>}
     <section className="panel-card" style={{ marginBottom: 24 }}>
       <div className="panel-header"><div><span className="panel-kicker">Decision</span><h2>{task.canDecide ? "Your decision" : "Status"}</h2>
-        <p>{task.canDecide ? "The first decision is final. Comments are kept in the approval history." : task.status === "Pending" ? "You can comment on this request but cannot decide it." : `This task is ${statusLabels[task.status].toLowerCase()}.`}</p></div></div>
+        <p>{task.canDecide ? "The first decision is final. Comments are kept in the approval history." : task.status === "Pending" ? "You can comment on this request but cannot decide it." : task.status === "ChangesRequested" ? "Waiting for the requester to resubmit." : `This task is ${statusLabels[task.status].toLowerCase()}.`}</p></div></div>
       <form onSubmit={addComment} className="stack-form">
         <label className="field">Comment<textarea className="task-comment" rows={4} maxLength={2000} value={comment} disabled={busy} placeholder="Add a comment (required when requesting changes)" onChange={event => setComment(event.target.value)} /></label>
         {task.canDecide && <p className="helper"><strong>Request changes</strong> sends the request back to the requester with your comment. The run stays on hold until they resubmit.</p>}
@@ -137,6 +204,64 @@ export function TaskDetail({ surface, initial }: { surface: TaskSurface; initial
     <section className="panel-card">
       <div className="panel-header"><div><span className="panel-kicker">History</span><h2>Approval history</h2></div></div>
       <ApprovalHistory history={task.history} />
+    </section>
+  </>;
+}
+
+const stepLabels: Record<string, string> = { Waiting: "Waiting", Completed: "Completed", Failed: "Stopped" };
+
+// My requests (Portal): the runs the caller started, where each one is, and its approval history.
+export function MyRequests() {
+  const [page, setPage] = useState(1);
+  const [data, setData] = useState<MyRequestPage | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [reload, setReload] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    apiRequest<MyRequestPage>(`/api/portal/my-requests?page=${page}`).then(rows => { if (!cancelled) { setData(rows); setError(""); } })
+      .catch(failure => { if (!cancelled) setError(failure instanceof Error ? failure.message : "Unable to load your requests."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [page, reload]);
+  return <section className="panel-card">
+    <div className="panel-header"><div><span className="panel-kicker">Requests</span><h2>My requests</h2><p>Runs you started by submitting forms, and where they stand.</p></div>
+      <button type="button" className="btn" onClick={() => { setLoading(true); setReload(value => value + 1); }}>Refresh</button></div>
+    {error && <p className="notice" role="alert">{error}</p>}
+    {loading ? <p className="empty-state">Loading requests…</p> : !data?.items.length ? <p className="empty-state">You have not started any requests yet. Submit a form that starts a workflow.</p> : <>
+      <div className="org-list">{data.items.map(request => <a key={request.id} className="org-option" href={`/requests/${request.id}`}>
+        <span><strong>{request.workflow}</strong><small style={{ display: "block" }}>{when(request.startedAt)}{request.currentStep ? ` · At ${request.currentStep}` : ""}</small></span>
+        <span className={request.status === "Completed" ? "tag" : "tag tag-warning"}>{request.headline}</span>
+      </a>)}</div>
+      <div className="designer-actions"><button className="btn" disabled={page <= 1} onClick={() => { setLoading(true); setPage(page - 1); }}>Previous</button><span>Page {page} · {data.total} requests</span>
+        <button className="btn" disabled={page * data.pageSize >= data.total} onClick={() => { setLoading(true); setPage(page + 1); }}>Next</button></div>
+    </>}
+  </section>;
+}
+
+export function MyRequestDetailView({ initial }: { initial: MyRequestDetail }) {
+  const request = initial;
+  const values = Object.entries(request.request ?? {});
+  return <>
+    <section className="panel-card" style={{ marginBottom: 24 }}>
+      <div className="panel-header"><div><span className="panel-kicker">Version {request.versionNumber} · {stepLabels[request.status] ?? request.status}</span><h2>{request.workflow}</h2>
+        <p>Started {when(request.startedAt)}{request.completedAt ? ` · Finished ${when(request.completedAt)}` : ""}{request.currentStep ? ` · At ${request.currentStep}` : ""}</p></div>
+        <span className={request.status === "Completed" ? "tag" : "tag tag-warning"}>{request.headline}</span></div>
+      {request.openTaskId && <div className={request.headline === "Changes requested" ? "request-callout" : "request-callout is-neutral"}>
+        <div><strong>{request.headline === "Changes requested" ? "The approver asked for changes" : request.headline}</strong>
+          <span>{request.headline === "Changes requested" ? "Update your request and resubmit it for approval." : "Open the approval to see comments and history."}</span></div>
+        <a className={request.headline === "Changes requested" ? "btn btn-primary" : "btn"} href={`/tasks/${request.openTaskId}`}>{request.headline === "Changes requested" ? "Update and resubmit" : "View the approval"}</a>
+      </div>}
+      <div className="submission-detail"><dl>
+        {values.length === 0 ? <div><dt>Request</dt><dd>No values.</dd></div> : values.map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{display(value)}</dd></div>)}
+      </dl></div>
+    </section>
+    <section className="panel-card">
+      <div className="panel-header"><div><span className="panel-kicker">History</span><h2>Approval history</h2></div></div>
+      {request.approvals.length === 0 ? <p className="empty-state">No approvals were needed for this request.</p> : request.approvals.map(approval => <div key={approval.id}>
+        <p><strong>{approval.assigneeRole} approval</strong> · <span className={statusTag(approval.status)}>{statusLabels[approval.status]}</span></p>
+        <ApprovalHistory history={approval.history} />
+      </div>)}
     </section>
   </>;
 }

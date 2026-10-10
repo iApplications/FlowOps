@@ -27,6 +27,7 @@ export { FormLibrary } from "./form-library";
 export { FormDesigner } from "./form-designer";
 export { FormRenderer } from "./form-renderer";
 export { PortalForm, SubmissionHistory } from "./form-submissions";
+export { AccountMenu } from "./account-menu";
 export { WorkflowLibrary } from "./workflow-library";
 export { WorkflowRuns, WorkflowRunDetail } from "./workflow-runs";
-export { TaskInbox, TaskDetail, ApprovalHistory } from "./approval-tasks";
+export { TaskInbox, TaskDetail, ApprovalHistory, MyRequests, MyRequestDetailView } from "./approval-tasks";
