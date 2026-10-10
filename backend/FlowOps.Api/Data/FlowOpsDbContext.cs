@@ -78,6 +78,8 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
     public DbSet<FlowOps.Api.Workflows.WorkflowInstance> WorkflowInstances => Set<FlowOps.Api.Workflows.WorkflowInstance>();
     public DbSet<FlowOps.Api.Workflows.WorkflowExecution> WorkflowExecutions => Set<FlowOps.Api.Workflows.WorkflowExecution>();
     public DbSet<FlowOps.Api.Workflows.WorkflowExecutionStep> WorkflowExecutionSteps => Set<FlowOps.Api.Workflows.WorkflowExecutionStep>();
+    public DbSet<FlowOps.Api.Workflows.ApprovalTask> ApprovalTasks => Set<FlowOps.Api.Workflows.ApprovalTask>();
+    public DbSet<FlowOps.Api.Workflows.ApprovalTaskEvent> ApprovalTaskEvents => Set<FlowOps.Api.Workflows.ApprovalTaskEvent>();
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
@@ -125,6 +127,9 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
         if (ChangeTracker.Entries<FlowOps.Api.Workflows.WorkflowExecutionStep>().Any(x => x.State is EntityState.Modified or EntityState.Deleted
                 && x.Property(v => v.Status).OriginalValue != FlowOps.Api.Workflows.WorkflowRunStatus.Running))
             throw new InvalidOperationException("Finished workflow steps are immutable.");
+        if (ChangeTracker.Entries<FlowOps.Api.Workflows.ApprovalTaskEvent>().Any(x => x.State is EntityState.Modified or EntityState.Deleted)
+                || ChangeTracker.Entries<FlowOps.Api.Workflows.ApprovalTask>().Any(x => x.State == EntityState.Deleted))
+            throw new InvalidOperationException("Approval history is append-only and tasks are never deleted.");
         if (ChangeTracker.Entries<AuditEvent>().Any(x => x.State is EntityState.Modified or EntityState.Deleted))
             throw new InvalidOperationException("Audit events are append-only.");
     }
@@ -233,6 +238,29 @@ public sealed class FlowOpsDbContext(DbContextOptions<FlowOpsDbContext> options)
             entity.HasIndex(x => x.InstanceId);
             entity.HasOne<FlowOps.Api.Workflows.WorkflowExecution>().WithMany().HasForeignKey(x => x.ExecutionId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne<FlowOps.Api.Workflows.WorkflowInstance>().WithMany().HasForeignKey(x => x.InstanceId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Restrict);
+        });
+        builder.Entity<FlowOps.Api.Workflows.ApprovalTask>(entity =>
+        {
+            entity.Property(x => x.NodeId).HasMaxLength(64);
+            entity.Property(x => x.AssigneeRole).HasMaxLength(16);
+            entity.Property(x => x.Instructions).HasMaxLength(1000);
+            entity.Property(x => x.Status).HasMaxLength(24);
+            entity.Property(x => x.CorrelationId).HasMaxLength(64);
+            entity.Property(x => x.Revision).IsConcurrencyToken();
+            entity.HasIndex(x => new { x.OrganizationId, x.Status, x.AssigneeRole });
+            entity.HasIndex(x => x.WorkflowInstanceId);
+            // At most one open task per instance and node.
+            entity.HasIndex(x => new { x.WorkflowInstanceId, x.NodeId }).IsUnique().HasFilter("\"Status\" IN ('Pending', 'ChangesRequested')");
+            entity.HasOne<FlowOps.Api.Workflows.WorkflowInstance>().WithMany().HasForeignKey(x => x.WorkflowInstanceId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Restrict);
+        });
+        builder.Entity<FlowOps.Api.Workflows.ApprovalTaskEvent>(entity =>
+        {
+            entity.Property(x => x.Kind).HasMaxLength(24);
+            entity.Property(x => x.Comment).HasMaxLength(2000);
+            entity.HasIndex(x => new { x.TaskId, x.CreatedAt });
+            entity.HasOne<FlowOps.Api.Workflows.ApprovalTask>().WithMany().HasForeignKey(x => x.TaskId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne<Organization>().WithMany().HasForeignKey(x => x.OrganizationId).OnDelete(DeleteBehavior.Restrict);
         });
         builder.Entity<FlowUser>().Property(x => x.DisplayName).HasMaxLength(120);

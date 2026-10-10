@@ -36,7 +36,7 @@ Out of scope, by later phase:
 
 1. **Request changes:** a resubmit loop. The task moves to `ChangesRequested` and the instance stays Waiting at the same node. The requester edits their values in Portal and resubmits; the task reopens as Pending. No new node outputs and no graph change, so published workflows are unaffected.
 2. **Assignment:** role claim. Any member of the instance's organization whose role satisfies the node's `assigneeRole` can see and decide the task. The first decision wins (task revision token). The requester can never decide their own task.
-3. **Surface:** Portal hosts My Tasks, decisions and requester status. Studio run detail shows the task and its history read-only.
+3. **Surface (revised 2026-10-10):** Portal accounts are always organization Members and Admin/Owner are Studio accounts, so one inbox cannot serve every role. The same task API is exposed on both surfaces: `/api/portal/tasks` (Portal Members, Member-role tasks) and `/api/tasks` (Studio Owner/Admin with the MFA policy, Owner/Admin-role tasks and any Member-role ones). Requester status stays in Portal.
 4. **Resume:** a decision calls the existing `WorkflowEngine.ResumeAsync` with `approved` or `rejected` in the same transaction as the task update.
 5. **Execution model:** still synchronous and in-process (PROJECT_RULES 18). No queue or worker.
 
@@ -75,7 +75,7 @@ ApprovalTaskEvent         append-only history for a task
 ## Delivery sequence
 
 1. **Approval tasks:** `ApprovalInbox` migration, task creation in the engine, decision/resume service, API, audit events, tests.
-2. **Portal inbox:** My Tasks, task detail with decision form and comments, Studio read-only task history.
+2. **Inbox UIs:** Portal My Tasks and Studio Tasks (task detail, decision form, comments), plus task history on the Studio run detail.
 3. **Requester status and resubmit:** My Requests, resubmit loop, tests.
 4. **Acceptance:** baseline Expense Approval end to end, docs/ARCHITECTURE updates, PROGRESS/README, browser pass, then the merge to `main`.
 
