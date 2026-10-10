@@ -87,6 +87,9 @@ function Designer({ initialWorkflow }: { initialWorkflow: WorkflowDetail }) {
   const [edges, setEdges] = useState<Edge[]>(initial.edges);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [revision, setRevision] = useState(draft.draftRevision);
+  const [versionNumber, setVersionNumber] = useState(draft.versionNumber);
+  const [latestPublished, setLatestPublished] = useState<number | null>(initialWorkflow.latestPublished?.versionNumber ?? null);
+  const [unpublished, setUnpublished] = useState(draft.hasUnpublishedChanges ?? true);
   // Completeness issues are computed by the server for the last saved graph.
   const [issues, setIssues] = useState<WorkflowIssue[]>(draft.issues ?? []);
   const [forms, setForms] = useState<FormOption[]>([]);
@@ -178,8 +181,22 @@ function Designer({ initialWorkflow }: { initialWorkflow: WorkflowDetail }) {
     };
     try {
       const saved = await apiRequest<WorkflowDetail>(`/api/workflows/${initialWorkflow.id}/draft`, { method: "PUT", body: JSON.stringify({ graph, draftRevision: revision }) });
-      setRevision(saved.draft!.draftRevision); setIssues(saved.draft!.issues ?? []); setDirty(false); setMessage("Draft saved.");
+      setRevision(saved.draft!.draftRevision); setIssues(saved.draft!.issues ?? []); setUnpublished(saved.draft!.hasUnpublishedChanges); setDirty(false); setMessage("Draft saved.");
     } catch (error) { setFailed(true); setMessage(error instanceof Error ? error.message : "Unable to save the workflow."); }
+    finally { setBusy(false); }
+  }
+  // Freezes the saved draft as a Published version; the server opens the next draft with the same graph.
+  async function publish() {
+    if (busy || !canPublish) return;
+    if (!window.confirm(`Publish draft version ${versionNumber}? Published versions cannot be changed; further edits go into version ${versionNumber + 1}.`)) return;
+    setBusy(true); setMessage(""); setFailed(false);
+    try {
+      const published = await apiRequest<WorkflowDetail>(`/api/workflows/${initialWorkflow.id}/publish`, { method: "POST", body: JSON.stringify({ draftRevision: revision }) });
+      setLatestPublished(published.latestPublished?.versionNumber ?? null);
+      setVersionNumber(published.draft!.versionNumber); setRevision(published.draft!.draftRevision);
+      setIssues(published.draft!.issues ?? []); setUnpublished(published.draft!.hasUnpublishedChanges);
+      setMessage(`Version ${published.latestPublished?.versionNumber} published. Further edits go into draft version ${published.draft!.versionNumber}.`);
+    } catch (error) { setFailed(true); setMessage(error instanceof Error ? error.message : "Unable to publish the workflow."); }
     finally { setBusy(false); }
   }
 
@@ -197,15 +214,21 @@ function Designer({ initialWorkflow }: { initialWorkflow: WorkflowDetail }) {
   }, {});
   const displayNodes = nodes.map(node => ({ ...node, data: { ...node.data, summary: summary(node.data, forms), issueCount: issuesByNode[node.id] ?? 0 } }));
   const config = selected?.data.config ?? {};
+  const canPublish = !busy && !dirty && issues.length === 0 && unpublished;
+  const publishHint = dirty ? "Save the draft before publishing." : issues.length ? "Resolve the issues before publishing."
+    : !unpublished ? `No changes since version ${latestPublished}.` : `Publishes version ${versionNumber}.`;
   return <section className="panel-card">
-    <div className="panel-header"><div><span className="panel-kicker">Draft version {draft.versionNumber}</span><h2>{initialWorkflow.name}</h2>
+    <div className="panel-header"><div><span className="panel-kicker">Draft version {versionNumber}{latestPublished ? ` · Published version ${latestPublished}` : " · Not published yet"}</span><h2>{initialWorkflow.name}</h2>
       <p>{dirty ? "Unsaved changes" : "All changes saved"}. Drag nodes from the palette, connect outputs to inputs, and select a node to configure it.</p></div>
-      <div className="designer-actions"><button type="button" className="btn btn-primary" disabled={busy || !dirty} onClick={save}>{busy ? "Saving…" : "Save draft"}</button></div></div>
+      <div className="designer-actions">
+        <button type="button" className="btn" disabled={busy || !dirty} onClick={save}>{busy ? "Working…" : "Save draft"}</button>
+        <button type="button" className="btn btn-primary" disabled={!canPublish} title={publishHint} onClick={publish}>Publish version {versionNumber}</button>
+      </div></div>
     {message && <p className="notice" role={failed ? "alert" : "status"}>{message}</p>}
     <div className={`wf-issues ${issues.length ? "" : "wf-issues-clear"}`} aria-live="polite">
       <div className="wf-issues-header">
         <strong>{issues.length ? `${issues.length} ${issues.length === 1 ? "issue" : "issues"} to resolve` : "No issues: this draft is complete."}</strong>
-        <small className="helper">{dirty ? "Showing the last saved check. Save the draft to re-check." : issues.length ? "Drafts with issues can be saved; publishing (Phase 4) will require none." : "It will be ready to publish when publishing arrives in Phase 4."}</small>
+        <small className="helper">{dirty ? "Showing the last saved check. Save the draft to re-check." : issues.length ? "Drafts with issues can be saved, but publishing requires none." : publishHint}</small>
       </div>
       {issues.length > 0 && <ul>{issues.map((issue, index) => <li key={`${issue.code}-${issue.nodeId ?? "workflow"}-${index}`}>
         {issue.nodeId && nodes.some(node => node.id === issue.nodeId)

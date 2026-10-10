@@ -15,7 +15,56 @@ public static class WorkflowEndpoints
         group.MapGet("/{workflowId:guid}", Get);
         group.MapPut("/{workflowId:guid}", Update);
         group.MapPut("/{workflowId:guid}/draft", SaveDraft).WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(512 * 1024));
+        group.MapPost("/{workflowId:guid}/publish", Publish);
     }
+
+    // Freezes the current draft as a Published version and opens the next draft with a copy of its graph.
+    private static async Task<IResult> Publish(Guid workflowId, PublishWorkflowRequest request, HttpContext context, FlowOpsDbContext db)
+    {
+        var session = AuthEndpoints.CurrentSession(context)!;
+        var workflow = await db.WorkflowDefinitions.SingleOrDefaultAsync(x => x.Id == workflowId && x.OrganizationId == session.ActiveOrganizationId);
+        if (workflow is null) return NotFound();
+        var draft = await db.WorkflowVersions.SingleOrDefaultAsync(x => x.WorkflowDefinitionId == workflow.Id && x.OrganizationId == workflow.OrganizationId && x.Status == WorkflowVersionStatus.Draft);
+        if (draft is null) return Results.Conflict(new { error = "This workflow has no draft to publish." });
+        if (request.DraftRevision is null) return Results.BadRequest(new { error = "Provide the draft revision you are publishing." });
+        if (request.DraftRevision != draft.DraftRevision) return Results.Conflict(new { error = "This draft changed in another session. Reload it before publishing." });
+        var graph = draft.Graph;
+        // Re-check structure: forms referenced by the trigger may have changed since the draft was saved.
+        var forms = await FormStates(db, workflow.OrganizationId, graph.Nodes);
+        if (WorkflowGraphValidation.Validate(graph, forms.ContainsKey) is string error) return Results.BadRequest(new { error });
+        var issues = WorkflowGraphCompleteness.Issues(graph, forms);
+        if (issues.Count > 0)
+            return Results.BadRequest(new { error = $"Resolve {issues.Count} {(issues.Count == 1 ? "issue" : "issues")} before publishing.", code = "workflow_incomplete", issues });
+        if (await LatestPublished(db, workflow) is { } latest && latest.GraphJson == draft.GraphJson)
+            return Results.Conflict(new { error = $"No changes since version {latest.VersionNumber}. Edit and save the draft before publishing.", code = "no_changes" });
+
+        // Two saves in one transaction: the one-Draft-per-workflow index is checked per statement, so the
+        // current draft must become Published before the next draft is inserted.
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        var now = DateTimeOffset.UtcNow;
+        draft.Status = WorkflowVersionStatus.Published;
+        draft.PublishedAt = now;
+        draft.UpdatedAt = now;
+        AuditService.Append(db, "workflow.published", session.UserId, workflow.Id.ToString(), workflow.OrganizationId);
+        try
+        {
+            await db.SaveChangesAsync();
+            db.WorkflowVersions.Add(new WorkflowVersion { WorkflowDefinitionId = workflow.Id, OrganizationId = workflow.OrganizationId,
+                VersionNumber = draft.VersionNumber + 1, GraphJson = draft.GraphJson, CreatedAt = now, UpdatedAt = now });
+            await db.SaveChangesAsync();
+            await transaction.CommitAsync();
+        }
+        catch (DbUpdateException)
+        {
+            // A concurrent publish or save won (revision token or unique version/draft index).
+            return Results.Conflict(new { error = "This draft changed in another session. Reload it before publishing." });
+        }
+        return Results.Ok(await Detail(db, workflow));
+    }
+
+    private static Task<WorkflowVersion?> LatestPublished(FlowOpsDbContext db, WorkflowDefinition workflow) =>
+        db.WorkflowVersions.AsNoTracking().Where(x => x.WorkflowDefinitionId == workflow.Id && x.OrganizationId == workflow.OrganizationId && x.Status == WorkflowVersionStatus.Published)
+            .OrderByDescending(x => x.VersionNumber).FirstOrDefaultAsync();
 
     private static async Task<IResult> SaveDraft(Guid workflowId, SaveDraftRequest request, HttpContext context, FlowOpsDbContext db)
     {
@@ -50,14 +99,16 @@ public static class WorkflowEndpoints
             .Select(x => new
             {
                 x.Id, x.Name, x.Description, x.Revision, x.CreatedAt, x.UpdatedAt,
-                PublishedVersions = db.WorkflowVersions.Count(v => v.WorkflowDefinitionId == x.Id && v.Status == WorkflowVersionStatus.Published)
+                PublishedVersions = db.WorkflowVersions.Count(v => v.WorkflowDefinitionId == x.Id && v.Status == WorkflowVersionStatus.Published),
+                LatestPublishedVersionNumber = db.WorkflowVersions.Where(v => v.WorkflowDefinitionId == x.Id && v.Status == WorkflowVersionStatus.Published)
+                    .Max(v => (int?)v.VersionNumber)
             }).ToListAsync();
         var drafts = (await db.WorkflowVersions.AsNoTracking().Where(x => x.OrganizationId == organizationId && x.Status == WorkflowVersionStatus.Draft).ToListAsync())
             .ToDictionary(x => x.WorkflowDefinitionId);
         var forms = await FormStates(db, organizationId, drafts.Values.SelectMany(x => x.Graph.Nodes));
         return Results.Ok(workflows.Select(x => new
         {
-            x.Id, x.Name, x.Description, x.Revision, x.CreatedAt, x.UpdatedAt, x.PublishedVersions,
+            x.Id, x.Name, x.Description, x.Revision, x.CreatedAt, x.UpdatedAt, x.PublishedVersions, x.LatestPublishedVersionNumber,
             DraftVersionNumber = drafts.TryGetValue(x.Id, out var draft) ? draft.VersionNumber : (int?)null,
             IssueCount = draft is null ? (int?)null : WorkflowGraphCompleteness.Issues(draft.Graph, forms).Count
         }));
@@ -110,10 +161,13 @@ public static class WorkflowEndpoints
         var publishedVersions = await db.WorkflowVersions.CountAsync(x => x.WorkflowDefinitionId == workflow.Id && x.Status == WorkflowVersionStatus.Published);
         var graph = draft?.Graph;
         var issues = graph is null ? new List<WorkflowIssue>() : WorkflowGraphCompleteness.Issues(graph, await FormStates(db, workflow.OrganizationId, graph.Nodes));
+        var latest = await LatestPublished(db, workflow);
         return new
         {
             workflow.Id, workflow.Name, workflow.Description, workflow.Revision, workflow.CreatedAt, workflow.UpdatedAt, PublishedVersions = publishedVersions,
-            Draft = draft is null ? null : new { draft.Id, draft.VersionNumber, draft.Status, draft.DraftRevision, Graph = graph, Issues = issues, draft.UpdatedAt }
+            LatestPublished = latest is null ? null : new { latest.Id, latest.VersionNumber, latest.PublishedAt },
+            Draft = draft is null ? null : new { draft.Id, draft.VersionNumber, draft.Status, draft.DraftRevision, Graph = graph, Issues = issues,
+                HasUnpublishedChanges = latest is null || latest.GraphJson != draft.GraphJson, draft.UpdatedAt }
         };
     }
 
@@ -140,3 +194,4 @@ public static class WorkflowEndpoints
 
 public sealed record WorkflowDetails(string Name, string? Description, int? Revision = null);
 public sealed record SaveDraftRequest(WorkflowGraph? Graph, int? DraftRevision);
+public sealed record PublishWorkflowRequest(int? DraftRevision);
