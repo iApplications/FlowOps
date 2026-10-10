@@ -29,3 +29,4 @@ export { FormRenderer } from "./form-renderer";
 export { PortalForm, SubmissionHistory } from "./form-submissions";
 export { WorkflowLibrary } from "./workflow-library";
 export { WorkflowRuns, WorkflowRunDetail } from "./workflow-runs";
+export { TaskInbox, TaskDetail, ApprovalHistory } from "./approval-tasks";
